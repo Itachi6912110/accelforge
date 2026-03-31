@@ -16,6 +16,18 @@ AccelForge is available on PyPI:
 pip install accelforge
 ```
 
+To install locally:
+
+```bash
+conda create --name AccelForge python=3.12
+conda activate AccelForge
+
+pip install jupyterlab ipywidgets
+git clone git@github.com:Itachi6912110/accelforge.git
+cd accelforge
+pip install -e .
+```
+
 ## Notebooks and Examples
 
 Examples can be found in the [`notebooks`](notebooks) directory in the [AccelForge
