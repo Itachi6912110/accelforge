@@ -8,13 +8,13 @@ name: L2Cache
 # The access width matches a 64-byte (512-bit) cache line.
 #
 # Specs:
-#   Total size:    2 MB (shared across all 8 SMs)
+#   Total size:    4 MB (shared across all 8 SMs)
 #   Cache line:    64 bytes (512 bits)
 #   Tech node:     Samsung 8nm → 8e-9 m
 #                  (CACTI extrapolates below its 22nm floor using sqrt energy scaling)
 component_class: SRAM
 
-size: 16777216  # 2 * 1024 * 1024 * 8 = 2 MB in bits
+size: 33554432  # 4 * 1024 * 1024 * 8 = 4 MB in bits
 
 extra_attributes_for_component_model:
   tech_node: 8e-9

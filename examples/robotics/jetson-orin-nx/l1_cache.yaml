@@ -4,19 +4,18 @@ name: L1Cache
 
 # Per-SM L1 data cache on the Ampere GA10B GPU (Jetson Orin NX, 16GB variant).
 # Each SM has 128 KB of combined L1 data cache + shared memory (configurable split).
-# We model the L1 data cache half: 64 KB per SM.
 # Same SM design as Jetson Orin Nano.
 # Modeled with CACTI via hwcomponents_cacti.SRAM (cache_type="ram").
 # The access width matches a 128-bit (16-byte) cache line.
 #
 # Specs (per SM):
-#   Size:          64 KB  (half of 128 KB L1/shared memory bank)
+#   Size:          128 KB
 #   Cache line:    128 bits (16 bytes)
 #   Tech node:     Samsung 8nm → 8e-9 m
 #   Number of SMs: 8  (Jetson Orin NX 16GB)
 component_class: SRAM
 
-size: 524288  # 64 * 1024 * 8 = 64 KB in bits
+size: 1048576  # 128 * 1024 * 8 = 128 KB in bits
 
 extra_attributes_for_component_model:
   tech_node: 8e-9

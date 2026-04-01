@@ -3,19 +3,19 @@
 name: L2Cache
 
 # Shared L2 cache of the Ampere GA10B GPU on Jetson Orin NX (16GB variant).
-# Same GPU die as Jetson Orin Nano — 2 MB L2 shared across all 8 SMs.
+# Same GPU die as Jetson Orin Nano — 4 MB L2 shared across all 8 SMs.
 # Modeled with CACTI via hwcomponents_cacti.SRAM (cache_type="ram").
 # Using SRAM avoids CACTI instability with high-associativity tag-array configurations.
 # The access width matches a 64-byte (512-bit) cache line.
 #
 # Specs:
-#   Total size:    2 MB (shared across all 8 SMs)
+#   Total size:    4 MB (shared across all 8 SMs)
 #   Cache line:    64 bytes (512 bits)
 #   Tech node:     Samsung 8nm → 8e-9 m
 #                  (CACTI extrapolates below its 22nm floor using sqrt energy scaling)
 component_class: SRAM
 
-size: 16777216  # 2 * 1024 * 1024 * 8 = 2 MB in bits
+size: 33554432  # 4 * 1024 * 1024 * 8 = 4 MB in bits
 
 extra_attributes_for_component_model:
   tech_node: 8e-9
