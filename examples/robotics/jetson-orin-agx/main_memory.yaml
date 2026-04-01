@@ -1,0 +1,20 @@
+!Memory
+
+name: MainMemory
+
+# LPDDR5X on Jetson Orin AGX (64GB variant).
+# The LPDDR5AGX component model is registered as a custom hwcomponents.ComponentModel
+# in the analysis notebook before this file is loaded.
+#
+# Specs:
+#   Process:    Samsung 8nm (8LPP)
+#   Bus width:  256-bit (4x 64-bit channels)
+#   Bandwidth:  204.8 GB/s peak (LPDDR5X @ 6400 MT/s, 256-bit bus)
+#   Energy:     ~3.7 pJ/bit (JEDEC LPDDR5 literature)
+component_class: LPDDR5AGX
+
+size: inf
+
+actions:
+- {name: read,  bits_per_action: 256}  # full 256-bit bus access
+- {name: write, bits_per_action: 256}

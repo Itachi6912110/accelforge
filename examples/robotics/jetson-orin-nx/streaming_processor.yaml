@@ -1,0 +1,28 @@
+!Compute
+
+name: StreamingProcessor
+
+# One SM (Streaming Multiprocessor) of the Ampere GA10B GPU on Jetson Orin NX.
+# Each SM contains 128 FP32 CUDA cores modeled as parallel IntMAC units
+# (AladdinIntMAC, scaled from 40 nm baseline to 8 nm via Stillmaker & Baas 2017 tables).
+#
+# Note: IntMAC is an ASIC-based model. GPU SMs carry additional overhead
+# (warp scheduler, register file, operand collectors) not captured here.
+# This gives a lower-bound energy estimate for the compute fabric.
+#
+# Specs (per SM):
+#   CUDA cores:  128 FP32 (modeled as 32-bit multiplier + 32-bit adder)
+#   GPU clock:   918 MHz (Jetson Orin NX max)  →  period = 1.089e-9 s
+#   Tech node:   Samsung 8nm → 8e-9 m
+#   SMs total:   8  (Jetson Orin NX 16GB)
+component_class: IntMAC
+
+n_parallel_instances: 128  # 128 FP32 CUDA cores per SM
+
+extra_attributes_for_component_model:
+  tech_node: 8e-9
+  multiplier_width: 32   # FP32 approximated as INT32 for area/energy
+  adder_width: 32
+
+actions:
+- {name: compute, latency: 1.089e-9}  # 1 / 918e6 = 1.089e-9 s (one clock period)
