@@ -1,0 +1,20 @@
+!Memory
+
+name: MainMemory
+
+# GDDR6X on RTX 4090 (Ada Lovelace AD102).
+# The GDDR6X component model is registered as a custom hwcomponents.ComponentModel
+# in the analysis notebook before this file is loaded.
+#
+# Specs:
+#   Process:    TSMC 4N (~5 nm)
+#   Bus width:  384-bit (12 × 32-bit channels)
+#   Bandwidth:  1008 GB/s peak (GDDR6X @ 21 Gbps per pin)
+#   Energy:     ~1.5 pJ/bit (GDDR6X PAM4 estimate)
+component_class: GDDR6X
+
+size: inf
+
+actions:
+- {name: read,  bits_per_action: 384}  # full 384-bit bus access
+- {name: write, bits_per_action: 384}

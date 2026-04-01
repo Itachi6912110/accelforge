@@ -1,0 +1,25 @@
+!Memory
+
+name: L2Cache
+
+# Shared L2 cache on the Ada Lovelace AD102 GPU (RTX 4090).
+# Single unified 72 MB L2 shared across all 128 SMs.
+# Modeled with CACTI via hwcomponents_cacti.SRAM (cache_type="ram").
+# The access width matches a 512-bit (64-byte) cache line.
+#
+# Specs:
+#   Size:          72 MB  (shared)
+#   Cache line:    512 bits (64 bytes)
+#   Tech node:     TSMC 4N (~5 nm) → 5e-9 m
+component_class: SRAM
+
+size: 603979776  # 72 * 1024 * 1024 * 8 = 72 MB in bits
+
+extra_attributes_for_component_model:
+  tech_node: 5e-9
+  width: 512        # 64-byte cache line in bits
+  n_banks: 16
+
+actions:
+- {name: read,  bits_per_action: 512}  # one full cache-line read
+- {name: write, bits_per_action: 512}  # one full cache-line write
