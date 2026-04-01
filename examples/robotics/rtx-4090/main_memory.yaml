@@ -10,7 +10,7 @@ name: MainMemory
 #   Process:    TSMC 4N (~5 nm)
 #   Bus width:  384-bit (12 × 32-bit channels)
 #   Bandwidth:  1008 GB/s peak (GDDR6X @ 21 Gbps per pin)
-#   Energy:     ~1.5 pJ/bit (GDDR6X PAM4 estimate)
+#   Energy:     ~7.26 pJ/bit (Micron GDDR6X datasheet)
 component_class: GDDR6X
 
 size: inf
