@@ -12,15 +12,17 @@ name: L1Cache
 #   Size:          192 KB 
 #   Cache line:    128 bits (16 bytes)
 #   Tech node:     Samsung 8nm → 8e-9 m
+#   Associativity: 4-way set associative (default is full-associative)
 #   Number of SMs: 16  (Jetson Orin AGX 64GB)
-component_class: SRAM
+component_class: SimpleSRAMCache
 
 size: 1572864  # 192 * 1024 * 8 = 192 KB in bits
 
 extra_attributes_for_component_model:
   tech_node: 8e-9
-  width: 128        # 16-byte cache line in bits
-  n_banks: 4
+  cache_size_bytes: 196608  # 192 KB in bytes
+  block_size_bytes: 16      # 4 bytes per cache line
+  associativity: 4          # 4-way set associative (typical for L1 caches)
 
 actions:
 - {name: read,  bits_per_action: 128}  # one full cache-line read

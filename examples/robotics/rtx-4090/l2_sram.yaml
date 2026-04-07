@@ -11,15 +11,14 @@ name: L2Cache
 #   Size:          72 MB  (shared)
 #   Cache line:    512 bits (64 bytes)
 #   Tech node:     TSMC 4N (~5 nm) → 5e-9 m
-component_class: SimpleSRAMCache
+component_class: SRAM
 
 size: 603979776  # 72 * 1024 * 1024 * 8 = 72 MB in bits
 
 extra_attributes_for_component_model:
   tech_node: 5e-9
-  cache_size_bytes: 75497472  # 72 MB in bytes
-  block_size_bytes: 64      # 64 bytes per cache line
-  associativity: 16         # 16-24 way set associative
+  width: 512        # 64-byte cache line in bits
+  n_banks: 16
 
 actions:
 - {name: read,  bits_per_action: 512}  # one full cache-line read

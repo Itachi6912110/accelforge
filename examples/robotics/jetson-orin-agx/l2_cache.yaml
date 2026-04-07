@@ -13,14 +13,15 @@ name: L2Cache
 #   Cache line:    64 bytes (512 bits)
 #   Tech node:     Samsung 8nm → 8e-9 m
 #                  (CACTI extrapolates below its 22nm floor using sqrt energy scaling)
-component_class: SRAM
+component_class: SimpleSRAMCache
 
 size: 50331648  # 6 * 1024 * 1024 * 8 = 6 MB in bits
 
 extra_attributes_for_component_model:
   tech_node: 8e-9
-  width: 512        # 64-byte cache line in bits
-  n_banks: 16
+  cache_size_bytes: 6291456  # 6 MB in bytes
+  block_size_bytes: 64      # 64 bytes per cache line
+  associativity: 32         # 16-32 way set associative (Ampere L2 cache configs)
 
 actions:
 - {name: read,  bits_per_action: 512}  # one full cache-line read

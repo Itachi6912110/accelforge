@@ -13,14 +13,15 @@ name: L1Cache
 #   Cache line:    128 bits (16 bytes)
 #   Tech node:     Samsung 8nm → 8e-9 m
 #   Number of SMs: 8  (Jetson Orin NX 16GB)
-component_class: SRAM
+component_class: SimpleSRAMCache
 
 size: 1048576  # 128 * 1024 * 8 = 128 KB in bits
 
 extra_attributes_for_component_model:
   tech_node: 8e-9
-  width: 128        # 16-byte cache line in bits
-  n_banks: 4
+  cache_size_bytes: 131072  # 128 KB in bytes
+  block_size_bytes: 16      # 16 bytes per cache line
+  associativity: 4          # 4-way set associative (typical for L1 caches)
 
 actions:
 - {name: read,  bits_per_action: 128}  # one full cache-line read
