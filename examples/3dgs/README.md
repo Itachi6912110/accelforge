@@ -18,6 +18,8 @@ models. Defaults are calibrated to one frame (garden, 960x622, 2340 16x16 tiles,
 | `arches/alpha_fused_arrays.yaml` | LPDDR4 -> SimpleSRAMCache -> {alpha-compute array (`!Fork`) \| blend array}, Einsums pinned by tag |
 | `dram_vs_sram_sweep.py` | maps every (variant, stage, GlobalBuffer size) for stages alpha_compute / alpha_blend / fused; CSVs, per-point mappings, figures |
 | `probe_limitations.py` | tries to express each 3DGS feature (sparsity, indirection, ragged lists, transmittance scan, cross-tile reuse) and records accept / reject |
+| `probe_load_balance.py` | ragged per-tile list lengths on a 4-engine array: shows latency / data movement are computed on the padded (longest-list) bounds |
+| `repro_ffm_pruning.py` | FFM partial-tile-shape pruning soundness: formula-level counterexamples and pruned-vs-exhaustive mapper runs (matmul, conv, stencil) |
 
 ```bash
 # from the accelforge repo root

@@ -25,7 +25,7 @@ Writes into DIR (default examples/3dgs/results/); rows of the (variant, stage) p
 are re-run replace the old ones, the rest of the CSVs is kept:
   sweep_tensors.csv   one row per (variant, stage, size, tensor): DRAM / GlobalBuffer bytes
   sweep_summary.csv   one row per (variant, stage, size): totals, energy, latency
-  mappings/<variant>/<stage>/glb_<bytes>.yaml   the mapper's LoopTree for that point
+  mappings/<variant>/<stage>/glb_<bytes>.{yaml,svg}   the LoopTree for that point
   fig_dram_total.png, fig_dram_per_tensor.png, fig_energy.png, fig_fused_vs_unfused.png
 """
 
@@ -196,6 +196,8 @@ def run_point(variant, stage, glb_bytes, out):
             ],
         )
     )
+    # LoopTree diagram (graphviz): storage nodes, loops with tile shapes, reservations.
+    (mdir / f"glb_{glb_bytes}.svg").write_text(str(m.render()))
     return tensor_rows, summary
 
 
