@@ -1,0 +1,37 @@
+# 3DGS alpha computation, unfused, with *cross-tile Gaussian reuse* approximated as a
+# regular stencil -- the only form of overlap AccelForge projections can express.
+#
+# Same math as alpha_compute.yaml, but the frame's tiles are explicit ranks (ty, tx)
+# instead of n_instances, and the Gaussians are binned on a (TileRows+Window-1) x
+# (TileCols+Window-1) grid with GaussiansPerBin each. Tile (ty, tx) reads the
+# Window x Window bins (ty + ry, tx + rx), so every Gaussian is used by Window^2 tiles:
+#
+#   Alpha[ty, tx, q, ry, rx, j] = f(GaussParams[BY = ty + ry, BX = tx + rx, J = j])
+#
+# Defaults are calibrated to garden frame 0 (60 x 39 tiles):
+#   per-tile list  = 2 * 2 * 184 = 736      (actual mean 742.7)
+#   tiles/Gaussian = 4                      (actual mean 3.89 over touched Gaussians)
+#   unique         = 40 * 61 * 184 = 448,960 (actual 447,124 touched Gaussians)
+# The real overlap is irregular (heavy-tailed footprint, data-dependent lists); this is a
+# structural approximation, not a trace.
+{% set TileRows = TileRows | default(39) %}
+{% set TileCols = TileCols | default(60) %}
+{% set PixelsPerTile = PixelsPerTile | default(256) %}
+{% set Window = Window | default(2) %}
+{% set GaussiansPerBin = GaussiansPerBin | default(184) %}
+{% set AlphaBits = AlphaBits | default(32) %}
+
+workload:
+  iteration_space_shape:
+    ty: 0 <= ty < {{TileRows}}
+    tx: 0 <= tx < {{TileCols}}
+    ry: 0 <= ry < {{Window}}
+    rx: 0 <= rx < {{Window}}
+    q: 0 <= q < {{PixelsPerTile}}
+    j: 0 <= j < {{GaussiansPerBin}}
+
+  einsums:
+  - name: AlphaCompute
+    tensor_accesses:
+    - {name: GaussParams, projection: {BY: ty + ry, BX: tx + rx, J: j}, bits_per_value: 192}
+    - {name: Alpha, projection: [ty, tx, q, ry, rx, j], output: True, bits_per_value: {{AlphaBits}}}

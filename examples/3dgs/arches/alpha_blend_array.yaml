@@ -1,0 +1,63 @@
+# DRAM -> GlobalBuffer (cache) -> 16x16 alpha-blend array.
+# Pairs with examples/3dgs/workloads/alpha_blend.yaml.
+#
+# All energies / areas come from hwcomponents models (no hand-typed numbers):
+#   DRAM          hwcomponents_cacti LPDDR4 (flat J/bit), 64-bit bus
+#   GlobalBuffer  SimpleSRAMCache (hwcomponents_extended/cache.py: CACTI data + tag SRAM,
+#                 4-way, 32 B lines); register it with
+#                 spec.config.add_component_models(SimpleSRAMCache) before mapping.
+#                 Note: this only sets the *per-access energy* of a cache. AccelForge
+#                 still places data in it like an explicitly-managed scratchpad with an
+#                 oracle tiling (no misses / conflicts / LRU), so DRAM traffic is a
+#                 best-case lower bound for a real cache of the same capacity.
+#   BlendPE       Aladdin IntMAC (32-bit, FP32 approximated as INT32 like
+#                 examples/robotics). One blend step is charged as ~6 MAC-equivalents:
+#                 w = alpha * T, C += w * color (3 MAC), T *= 1 - alpha (add + mul), and
+#                 the T < 1e-4 compare. The PEs have no private accumulator: PixelOut
+#                 partial sums live in the GlobalBuffer (or spill to DRAM).
+{% set GlobalBufferBytes = GlobalBufferBytes | default(65536) %}
+{% set TechNode = TechNode | default(16e-9) %}
+{% set ArrayDim = ArrayDim | default(16) %}
+
+arch:
+  nodes:
+  - !Memory
+    name: DRAM
+    component_class: LPDDR4
+    size: inf
+    area: 0
+    tensors: {keep: ~Intermediates, may_keep: All}
+    extra_attributes_for_component_model: {width: 64}
+    actions:
+    - {name: read, bits_per_action: 64}
+    - {name: write, bits_per_action: 64}
+
+  - !Memory
+    name: GlobalBuffer
+    component_class: SimpleSRAMCache
+    size: {{GlobalBufferBytes * 8}}
+    tensors: {keep: ~DRAM, may_keep: All}
+    extra_attributes_for_component_model:
+      tech_node: {{TechNode}}
+      cache_size_bytes: {{GlobalBufferBytes}}
+      block_size_bytes: 32
+      associativity: 4
+    actions:
+    - {name: read, bits_per_action: 256}
+    - {name: write, bits_per_action: 256}
+
+  - !Container
+    name: AlphaBlendArray
+    spatial:
+    - {name: X, fanout: {{ArrayDim}}}
+    - {name: Y, fanout: {{ArrayDim}}}
+
+  - !Compute
+    name: BlendPE
+    component_class: IntMAC
+    extra_attributes_for_component_model:
+      tech_node: {{TechNode}}
+      multiplier_width: 32
+      adder_width: 32
+    actions:
+    - {name: compute, energy_scale: 6}

@@ -1,0 +1,43 @@
+# 3DGS alpha computation (the per-pair conic evaluation in renderCUDA), unfused.
+#
+# One Einsum instance = one 16x16 image tile; workload.n_instances repeats it for every
+# tile of the frame (energy / latency / action counts are multiplied by it).
+#
+#   Alpha[q, k] = min(0.99, opacity_k * exp(-0.5 d^T Conic_k d)),  d = pixel_q - mean2D_k
+#
+#   q: pixel inside the tile          (PixelsPerTile = 16 * 16)
+#   k: slot in the tile's sorted Gaussian list
+#
+# Modeling assumptions (see plans/3dgs-accelforge/ in the 3DGS-Arch-Evaluation repo):
+# - GaussParams is the tile's Gaussian list *pre-gathered* per tile: AccelForge
+#   projections are affine in the rank variables, so the data-dependent
+#   tile -> gaussian-id indirection (point_list) cannot be expressed, and a Gaussian
+#   that overlaps N tiles is a distinct value in each of the N lists (no cross-tile
+#   reuse is visible to the mapper).
+# - Every tile has the same list length (GaussiansPerTile; ragged lists are not
+#   expressible). Default 744 ~ garden frame 0 mean of 742.7 (1,738,033 pairs / 2340
+#   tiles), rounded up because 743 is prime and would leave the mapper only trivial
+#   tile shapes for k.
+# - Dense: alpha < 1/255 pruning and early termination are data-dependent and not
+#   modeled; every (pixel, Gaussian) pair of a tile is evaluated.
+# - Pixel coordinates are generated from the loop counters inside the array, so they
+#   are not a tensor (q appears only in the output).
+# - Unfused: Alpha is a workload output, i.e. it is written back to DRAM.
+{% set NumTiles = NumTiles | default(2340) %}
+{% set PixelsPerTile = PixelsPerTile | default(256) %}
+{% set GaussiansPerTile = GaussiansPerTile | default(744) %}
+{% set AlphaBits = AlphaBits | default(32) %}
+
+workload:
+  n_instances: {{NumTiles}}
+  iteration_space_shape:
+    q: 0 <= q < {{PixelsPerTile}}
+    k: 0 <= k < {{GaussiansPerTile}}
+
+  einsums:
+  - name: AlphaCompute
+    tensor_accesses:
+    # mean2D (2) + conic (3) + opacity (1), fp32 -- renderCUDA's collected_xy +
+    # collected_conic_opacity.
+    - {name: GaussParams, projection: [k], bits_per_value: 192}
+    - {name: Alpha, projection: [q, k], output: True, bits_per_value: {{AlphaBits}}}

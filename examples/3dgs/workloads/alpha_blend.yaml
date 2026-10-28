@@ -1,0 +1,43 @@
+# 3DGS front-to-back alpha blending (renderCUDA's per-pixel compositing loop), unfused.
+#
+# One Einsum instance = one 16x16 image tile; workload.n_instances repeats it for every
+# tile of the frame (energy / latency / action counts are multiplied by it).
+#
+#   PixelOut[q] = (C_q, T_q):  C_q += Color_k * Alpha[q, k] * T_q;  T_q *= 1 - Alpha[q, k]
+#
+#   q: pixel inside the tile          (PixelsPerTile = 16 * 16)
+#   k: slot in the tile's depth-sorted Gaussian list (reduced)
+#
+# Modeling assumptions (see plans/3dgs-accelforge/ in the 3DGS-Arch-Evaluation repo):
+# - The transmittance recurrence T_q = prod_{j<k} (1 - Alpha[q, j]) is a prefix scan,
+#   not an Einsum. It is modeled as a reduction over k into a per-pixel accumulator
+#   PixelOut[q] that carries RGB *and* T (4 x fp32): each step reads Alpha[q, k] and
+#   Color[k] and read-modify-writes PixelOut[q], which is exactly the data movement of
+#   the compositing loop. Front-to-back "over" is associative, so k-tiling (and a
+#   tree combine for a spatial split of k) stays legal; AccelForge does not check
+#   the order, it just never reorders temporal iterations.
+# - Color is the tile's pre-gathered list (same reasons as GaussParams in
+#   alpha_compute.yaml: no indirection, no cross-tile reuse, uniform list length).
+# - Dense: early termination (T < 1e-4) and alpha < 1/255 skips are data-dependent and
+#   not modeled.
+# - Unfused: Alpha is a workload input, i.e. it is read from DRAM (written there by
+#   alpha_compute.yaml).
+{% set NumTiles = NumTiles | default(2340) %}
+{% set PixelsPerTile = PixelsPerTile | default(256) %}
+{% set GaussiansPerTile = GaussiansPerTile | default(744) %}
+{% set AlphaBits = AlphaBits | default(32) %}
+
+workload:
+  n_instances: {{NumTiles}}
+  iteration_space_shape:
+    q: 0 <= q < {{PixelsPerTile}}
+    k: 0 <= k < {{GaussiansPerTile}}
+
+  einsums:
+  - name: AlphaBlend
+    tensor_accesses:
+    - {name: Alpha, projection: [q, k], bits_per_value: {{AlphaBits}}}
+    # RGB, fp32 (SH already evaluated to color in preprocessCUDA).
+    - {name: Color, projection: [k], bits_per_value: 96}
+    # RGB + transmittance accumulator, fp32.
+    - {name: PixelOut, projection: [q], output: True, bits_per_value: 128}

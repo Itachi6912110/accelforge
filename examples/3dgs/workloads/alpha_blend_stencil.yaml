@@ -1,0 +1,32 @@
+# 3DGS alpha blending, unfused, with *cross-tile Gaussian reuse* approximated as a
+# regular stencil -- the only form of overlap AccelForge projections can express.
+#
+# Same math as alpha_blend.yaml (PixelOut carries RGB + T, the transmittance scan is
+# modeled as a reduction), with tiles as explicit ranks and Color binned exactly like
+# GaussParams in alpha_compute_stencil.yaml:
+#
+#   PixelOut[ty, tx, q] += Alpha[ty, tx, q, ry, rx, j] * Color[BY = ty + ry, BX = tx + rx, J = j]
+#
+# Defaults are calibrated to garden frame 0; see alpha_compute_stencil.yaml.
+{% set TileRows = TileRows | default(39) %}
+{% set TileCols = TileCols | default(60) %}
+{% set PixelsPerTile = PixelsPerTile | default(256) %}
+{% set Window = Window | default(2) %}
+{% set GaussiansPerBin = GaussiansPerBin | default(184) %}
+{% set AlphaBits = AlphaBits | default(32) %}
+
+workload:
+  iteration_space_shape:
+    ty: 0 <= ty < {{TileRows}}
+    tx: 0 <= tx < {{TileCols}}
+    ry: 0 <= ry < {{Window}}
+    rx: 0 <= rx < {{Window}}
+    q: 0 <= q < {{PixelsPerTile}}
+    j: 0 <= j < {{GaussiansPerBin}}
+
+  einsums:
+  - name: AlphaBlend
+    tensor_accesses:
+    - {name: Alpha, projection: [ty, tx, q, ry, rx, j], bits_per_value: {{AlphaBits}}}
+    - {name: Color, projection: {BY: ty + ry, BX: tx + rx, J: j}, bits_per_value: 96}
+    - {name: PixelOut, projection: [ty, tx, q], output: True, bits_per_value: 128}
