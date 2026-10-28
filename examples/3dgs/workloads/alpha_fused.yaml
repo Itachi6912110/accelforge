@@ -1,0 +1,41 @@
+# 3DGS alpha computation -> alpha blending as one two-Einsum cascade, so the mapper may
+# fuse them: Alpha is an *intermediate* (produced by AlphaCompute, consumed by
+# AlphaBlend), and the arch's DRAM keeps only ~Intermediates, so Alpha may live entirely
+# in the GlobalBuffer. Same per-tile formulation and assumptions as alpha_compute.yaml /
+# alpha_blend.yaml (one tile per Einsum instance, pre-gathered uniform lists, dense,
+# transmittance scan as an RGB+T accumulator reduction).
+#
+#   AlphaCompute  Alpha[q, k]   = f(GaussParams[k])
+#   AlphaBlend    PixelOut[q]  += Alpha[q, k] * Color[k]
+#
+# Fusion in AccelForge is *sequential*: loops shared by both Einsums sit above a
+# Sequential split, and per shared-loop iteration AlphaCompute's branch runs, then
+# AlphaBlend's. A pipelined design (both arrays busy at once on consecutive chunks) has
+# the same accesses for the same tiling; AccelForge's FFM mapper does not model the
+# latency overlap or the ping-pong copy of the Alpha chunk.
+#
+# Tags select the compute path per Einsum in arches/alpha_fused_arrays.yaml.
+{% set NumTiles = NumTiles | default(2340) %}
+{% set PixelsPerTile = PixelsPerTile | default(256) %}
+{% set GaussiansPerTile = GaussiansPerTile | default(744) %}
+{% set AlphaBits = AlphaBits | default(32) %}
+
+workload:
+  n_instances: {{NumTiles}}
+  iteration_space_shape:
+    q: 0 <= q < {{PixelsPerTile}}
+    k: 0 <= k < {{GaussiansPerTile}}
+
+  einsums:
+  - name: AlphaCompute
+    tags: [alpha_compute]
+    tensor_accesses:
+    - {name: GaussParams, projection: [k], bits_per_value: 192}
+    - {name: Alpha, projection: [q, k], output: True, bits_per_value: {{AlphaBits}}}
+
+  - name: AlphaBlend
+    tags: [alpha_blend]
+    tensor_accesses:
+    - {name: Alpha, projection: [q, k], bits_per_value: {{AlphaBits}}}
+    - {name: Color, projection: [k], bits_per_value: 96}
+    - {name: PixelOut, projection: [q], output: True, bits_per_value: 128}

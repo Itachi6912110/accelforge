@@ -1,13 +1,16 @@
-"""DRAM traffic vs. on-chip GlobalBuffer size for unfused 3DGS alpha compute / blend.
+"""DRAM traffic vs. on-chip GlobalBuffer size for 3DGS alpha compute / blend.
 
 For every (variant, stage, GlobalBuffer size) point this runs AccelForge's mapper with an
 energy objective on
 
   stage alpha_compute: workloads/alpha_compute[_stencil].yaml on arches/alpha_compute_array.yaml
   stage alpha_blend:   workloads/alpha_blend[_stencil].yaml   on arches/alpha_blend_array.yaml
+  stage fused:         workloads/alpha_fused.yaml             on arches/alpha_fused_arrays.yaml
+                       (both Einsums, Alpha an intermediate the mapper may keep on chip)
 
-and records the optimal mapping's DRAM / GlobalBuffer traffic per tensor, the
-compulsory (read-once / write-once) DRAM traffic, and the energy breakdown. Variants:
+and records the best-found mapping's DRAM / GlobalBuffer traffic per tensor, the
+compulsory (read-once / write-once; 0 for intermediates) DRAM traffic, and the energy
+breakdown. Variants (a (variant, stage) pair without a workload file is skipped):
 
   tile     per-tile pre-gathered Gaussian lists, one Einsum instance per tile
            (n_instances), i.e. no cross-tile reuse visible to the mapper
@@ -16,13 +19,14 @@ compulsory (read-once / write-once) DRAM traffic, and the energy breakdown. Vari
 
 Usage (from the accelforge repo root):
     python examples/3dgs/dram_vs_sram_sweep.py [--out DIR] [--sizes B ...]
-        [--variants tile stencil] [--stages alpha_compute alpha_blend] [--plot-only]
+        [--variants tile stencil] [--stages alpha_compute alpha_blend fused] [--plot-only]
 
-Writes into DIR (default examples/3dgs/results/):
+Writes into DIR (default examples/3dgs/results/); rows of the (variant, stage) pairs that
+are re-run replace the old ones, the rest of the CSVs is kept:
   sweep_tensors.csv   one row per (variant, stage, size, tensor): DRAM / GlobalBuffer bytes
   sweep_summary.csv   one row per (variant, stage, size): totals, energy, latency
   mappings/<variant>/<stage>/glb_<bytes>.yaml   the mapper's LoopTree for that point
-  fig_dram_total.png, fig_dram_per_tensor.png, fig_energy.png
+  fig_dram_total.png, fig_dram_per_tensor.png, fig_energy.png, fig_fused_vs_unfused.png
 """
 
 import argparse
@@ -34,15 +38,18 @@ from pathlib import Path
 
 import accelforge as af
 from accelforge.frontend.mapping.mapping import MappingNodeWithChildren
+from accelforge.mapper.FFM._make_pmappings.make_pmappings import get_per_tensor_n_elements
 from hwcomponents_extended.cache import SimpleSRAMCache
 
 HERE = Path(__file__).resolve().parent
 
+# stage -> (arch file stem, workload file stem)
 STAGES = {
-    "alpha_compute": "alpha_compute_array",
-    "alpha_blend": "alpha_blend_array",
+    "alpha_compute": ("alpha_compute_array", "alpha_compute"),
+    "alpha_blend": ("alpha_blend_array", "alpha_blend"),
+    "fused": ("alpha_fused_arrays", "alpha_fused"),
 }
-VARIANTS = {"tile": "{stage}.yaml", "stencil": "{stage}_stencil.yaml"}
+VARIANTS = {"tile": "{workload}.yaml", "stencil": "{workload}_stencil.yaml"}
 # 128 B (smallest 4-way x 32 B SimpleSRAMCache) .. 8 MiB
 DEFAULT_SIZES = [2**i for i in range(7, 24)]
 
@@ -83,9 +90,13 @@ def mapping_to_yaml(mapping, header):
 
 
 # --------------------------------------------------------------------------- sweep
+def workload_file(variant, stage):
+    return HERE / "workloads" / VARIANTS[variant].format(workload=STAGES[stage][1])
+
+
 def run_point(variant, stage, glb_bytes, out):
-    arch = HERE / "arches" / f"{STAGES[stage]}.yaml"
-    workload = HERE / "workloads" / VARIANTS[variant].format(stage=stage)
+    arch = HERE / "arches" / f"{STAGES[stage][0]}.yaml"
+    workload = workload_file(variant, stage)
     spec = af.Spec.from_yaml(
         arch, workload, jinja_parse_data={"GlobalBufferBytes": glb_bytes}
     )
@@ -103,8 +114,20 @@ def run_point(variant, stage, glb_bytes, out):
     mapper_s = time.perf_counter() - t0
 
     n_instances = spec.workload.n_instances
-    tensor_bits = m.per_tensor_size()  # per Einsum instance
-    outputs = set(spec.workload.einsums[0].output_tensor_names)
+    # Per Einsum instance. Mappings.per_tensor_size() only looks at the first Einsum's
+    # evaluated spec, so collect the sizes from every Einsum's.
+    tensor_bits = {}
+    for evaluated in m.evaluated_specs.values():
+        n_elements = get_per_tensor_n_elements(evaluated.workload)
+        for einsum in evaluated.workload.einsums:
+            for tensor in einsum.tensor_names:
+                tensor_bits[tensor] = (
+                    n_elements[tensor] * einsum.tensor_accesses[tensor].bits_per_value
+                )
+    produced = {t for e in spec.workload.einsums for t in e.output_tensor_names}
+    consumed = {t for e in spec.workload.einsums for t in e.input_tensor_names}
+    intermediates = produced & consumed  # need not touch DRAM at all
+    outputs = produced - intermediates
     actions = m.actions(per_component=True, per_tensor=True)
 
     def nbytes(component, tensor, action):
@@ -118,7 +141,8 @@ def run_point(variant, stage, glb_bytes, out):
             "glb_bytes": glb_bytes,
             "tensor": tensor,
             "is_output": tensor in outputs,
-            "compulsory_dram_bytes": bits * n_instances / 8,
+            "is_intermediate": tensor in intermediates,
+            "compulsory_dram_bytes": 0.0 if tensor in intermediates else bits * n_instances / 8,
             "dram_read_bytes": nbytes("DRAM", tensor, "read"),
             "dram_write_bytes": nbytes("DRAM", tensor, "write"),
             "glb_read_bytes": nbytes("GlobalBuffer", tensor, "read"),
@@ -178,9 +202,23 @@ def run_point(variant, stage, glb_bytes, out):
 def sweep(args):
     import pandas as pd
 
+    # Keep rows of (variant, stage) pairs that are not re-run in this invocation.
+    pairs = {(v, s) for v in args.variants for s in args.stages if workload_file(v, s).exists()}
+    old = {}
+    for name in ("sweep_tensors.csv", "sweep_summary.csv"):
+        path = args.out / name
+        if path.exists():
+            df = pd.read_csv(path)
+            old[name] = df[[(v, s) not in pairs for v, s in zip(df.variant, df.stage)]]
+        else:
+            old[name] = pd.DataFrame()
+
     tensor_rows, summaries = [], []
     for variant in args.variants:
         for stage in args.stages:
+            if (variant, stage) not in pairs:
+                print(f"skip {variant} {stage}: no {workload_file(variant, stage).name}")
+                continue
             for glb_bytes in args.sizes:
                 rows, summary = run_point(variant, stage, glb_bytes, args.out)
                 tensor_rows += rows
@@ -193,8 +231,11 @@ def sweep(args):
                     flush=True,
                 )
                 # Rewrite after every point so a long sweep can be inspected / resumed.
-                pd.DataFrame(tensor_rows).to_csv(args.out / "sweep_tensors.csv", index=False)
-                pd.DataFrame(summaries).to_csv(args.out / "sweep_summary.csv", index=False)
+                for name, rows in (("sweep_tensors.csv", tensor_rows),
+                                   ("sweep_summary.csv", summaries)):
+                    pd.concat([old[name], pd.DataFrame(rows)], ignore_index=True).to_csv(
+                        args.out / name, index=False
+                    )
 
 
 # --------------------------------------------------------------------------- plots
@@ -206,7 +247,12 @@ VARIANT_LABEL = {
     "tile": "per-tile lists (no cross-tile reuse)",
     "stencil": "2x2 stencil (cross-tile reuse)",
 }
-STAGE_LABEL = {"alpha_compute": "Alpha compute", "alpha_blend": "Alpha blend"}
+STAGE_LABEL = {
+    "alpha_compute": "Alpha compute",
+    "alpha_blend": "Alpha blend",
+    "fused": "Fused alpha compute -> blend",
+}
+UNFUSED = ("alpha_compute", "alpha_blend")
 
 
 def _style(ax):
@@ -249,7 +295,7 @@ def plot(out):
     tensors = pd.read_csv(out / "sweep_tensors.csv")
     plt.rcParams.update({"font.family": "sans-serif", "font.size": 9, "text.color": INK})
     variants = [v for v in VARIANTS if v in set(summary.variant)]
-    stages = [s for s in STAGES if s in set(summary.stage)]
+    stages = [s for s in UNFUSED if s in set(summary.stage)]  # figures 1-3
 
     # 1. Total DRAM traffic vs GlobalBuffer size, one panel per stage.
     fig, axes = plt.subplots(1, len(stages), figsize=(4.6 * len(stages), 3.4), squeeze=False)
@@ -322,6 +368,53 @@ def plot(out):
                   borderaxespad=0.2)
     fig.tight_layout()
     fig.savefig(out / "fig_energy.png", dpi=160, facecolor=SURFACE)
+    plt.close(fig)
+
+    # 4. Fused vs unfused (per-tile variant): total DRAM traffic, and the fused design's
+    #    dynamic energy breakdown.
+    tile = summary[summary.variant == "tile"]
+    fused = tile[tile.stage == "fused"].sort_values("glb_bytes")
+    if fused.empty or not set(UNFUSED) <= set(tile.stage):
+        return
+    unfused = (
+        tile[tile.stage.isin(UNFUSED)]
+        .groupby("glb_bytes")[["dram_bytes", "compulsory_dram_bytes"]]
+        .sum()
+        .reset_index()
+    )
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(9.2, 3.4))
+    _style(ax)
+    ax.set_yscale("log")
+    ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1, 2, 5)))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.yaxis.set_minor_formatter(FuncFormatter(lambda v, _: ""))
+    for color, (label, d) in zip(
+        SERIES, (("unfused (compute + blend)", unfused), ("fused", fused))
+    ):
+        ax.plot(d.glb_bytes, d.dram_bytes / 1e6, color=color, lw=2, marker="o", ms=4,
+                label=label)
+        ax.axhline(d.compulsory_dram_bytes.iloc[0] / 1e6, color=color, lw=1,
+                   ls=(0, (3, 3)), alpha=0.7)
+    ax.set_title("DRAM traffic (dashed = compulsory)", color=INK, fontsize=10, loc="left")
+    ax.set_xlabel("GlobalBuffer size", color=INK2)
+    ax.set_ylabel("DRAM traffic per frame (MB)", color=INK2)
+    ax.legend(frameon=False, fontsize=8, labelcolor=INK2, loc="center right")
+
+    _style(ax2)
+    pes = [c for c in fused.columns if c.startswith("energy_dyn_") and c.endswith("PE_J")]
+    parts = [fused.energy_dyn_DRAM_J, fused.energy_dyn_GlobalBuffer_J, fused[pes].sum(axis=1)]
+    ax2.stackplot(fused.glb_bytes, *[p * 1e3 for p in parts], colors=SERIES,
+                  labels=["DRAM", "GlobalBuffer", "PE arrays"], edgecolor=SURFACE,
+                  linewidth=1)
+    ax2.set_ylim(0, fused.energy_dyn_total_J.max() * 1e3 * 1.25)
+    ax2.set_title("Fused: dynamic energy", color=INK, fontsize=10, loc="left", pad=22)
+    ax2.set_xlabel("GlobalBuffer size", color=INK2)
+    ax2.set_ylabel("Dynamic energy per frame (mJ)", color=INK2)
+    ax2.legend(frameon=False, fontsize=8, labelcolor=INK2, ncol=3, loc="lower left",
+               bbox_to_anchor=(0, 1.0), handlelength=1.2, handletextpad=0.5,
+               borderaxespad=0.2)
+    fig.tight_layout()
+    fig.savefig(out / "fig_fused_vs_unfused.png", dpi=160, facecolor=SURFACE)
     plt.close(fig)
 
 
