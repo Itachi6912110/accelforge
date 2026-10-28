@@ -113,7 +113,12 @@ def col2energy(colname: str) -> ActionKey | VerboseActionKey:
     separated_names = colname.split(SEP)
     if len(separated_names) == 4:
         assert separated_names[1] == "energy", colname
-        return ActionKey(separated_names[2], separated_names[3])
+        return VerboseActionKey(
+            separated_names[2],
+            separated_names[3],
+            "None",
+            separated_names[0],
+        )
     elif len(separated_names) == 5:
         assert separated_names[1] == "energy"
         return VerboseActionKey(
@@ -127,6 +132,46 @@ def col2energy(colname: str) -> ActionKey | VerboseActionKey:
 
 
 ReservationKey = namedtuple("ReservationKey", ["name", "nloops"])
+ComponentLatencyKey = namedtuple("ComponentLatencyKey", ["name", "nloops"])
+CommLatencyKey = namedtuple("CommLatencyKey", ["direction", "nloops"])
+
+
+@dict_cached
+def col2complatency(x: str) -> ComponentLatencyKey | None:
+    """
+    Format: level_latency component_name nloops. One column per (component, loop level).
+    Unlike component_latency<SEP>component_name, these are used to calculate total
+    latency because they may be shared across Einsums.
+    """
+    parts = x.split(SEP)
+    if len(parts) != 3 or parts[0] != "level_latency":
+        return None
+    return ComponentLatencyKey(parts[1], int(parts[2]))
+
+
+@dict_cached
+def complatency2col(name: str, nloops: int) -> str:
+    """Format: level_latency name nloops"""
+    return f"level_latency<SEP>{name}<SEP>{nloops}"
+
+
+@dict_cached
+def col2commlatency(x: str) -> CommLatencyKey | None:
+    """Format: (descent_latency | ascent_latency) nloops. The time it takes for
+    computation to move down (or up) the LoopTree across fused loops."""
+    parts = x.split(SEP)
+    if len(parts) != 2 or parts[0] not in ("descent_latency", "ascent_latency"):
+        return None
+    if not parts[1].isdigit():  # e.g. merge-suffixed copies of the column
+        return None
+    return CommLatencyKey(parts[0][: -len("_latency")], int(parts[1]))
+
+
+@dict_cached
+def commlatency2col(direction: str, nloops: int) -> str:
+    """Format: (descent_latency | ascent_latency) nloops"""
+    assert direction in ("descent", "ascent")
+    return f"{direction}_latency{SEP}{nloops}"
 
 
 @dict_cached
@@ -184,12 +229,6 @@ def col2iterations(col: str) -> int | None:
 
 
 @dict_cached
-def firstlatency2col(name: str, nloops: int) -> str:
-    """Format: first latency name level"""
-    return f"first_latency<SEP>{name}<SEP>{nloops}"
-
-
-@dict_cached
 def tensor2col(tensor: str) -> str:
     """Format: tensor tensor_name"""
     return f"tensor<SEP>{tensor}"
@@ -201,12 +240,44 @@ def col2nametensor(col: str) -> str | None:
     x = partition_col(col, "tensor", 2)
     if x is None:
         return None
-    return x[1]
+    return x[0]
 
 
 @dict_cached
 def is_tensor_col(c: str) -> bool:
     return c.startswith("tensor<SEP>")
+
+
+@dict_cached
+def is_action_col(c: str) -> bool:
+    return c.startswith(f"action{SEP}")
+
+
+@dict_cached
+def is_usage_col(c: str) -> bool:
+    return c.startswith(f"usage{SEP}")
+
+
+@dict_cached
+def is_latency_col(c: str) -> bool:
+    return (
+        c == f"Total{SEP}latency"
+        or c.split(SEP)[0] == "component_latency"
+        or col2complatency(c) is not None
+    )
+
+
+@dict_cached
+def is_energy_col(c: str) -> bool:
+    parts = c.split(SEP)
+    if parts[0] == "energy":
+        return True
+    return parts[0] == "Total" and parts[1] in (
+        "energy",
+        "dynamic_energy",
+        "leak_energy",
+        "energy_delay_product",
+    )
 
 
 @dict_cached
@@ -237,6 +308,14 @@ def make_fused_loop_col(s: str) -> str:
 
 def is_fused_loop_col(c: str) -> bool:
     return c.startswith("fused_loop<SEP>")
+
+
+def make_binding_col(s: str) -> str:
+    return f"binding<SEP>{s}"
+
+
+def is_binding_col(c: str) -> bool:
+    return c.startswith("binding<SEP>")
 
 
 def is_n_iterations_col(c: str) -> bool:
@@ -282,7 +361,23 @@ def is_objective_col(c):
 
 
 def col_used_in_pareto(c):
-    return col2reservation(c) is not None or is_objective_col(c)
+    return (
+        col2reservation(c) is not None
+        or col2complatency(c) is not None
+        or col2commlatency(c) is not None
+        or is_objective_col(c)
+    )
+
+
+def uses_objective_tolerance(c):
+    # NOTE: Objective tolerance works with anything that's additive. If things are going
+    # to be multiplied repeatedly, don't put em here. We make an exception for EDP since
+    # it's multiplied exactly once.
+    return (
+        col2complatency(c) is not None
+        or col2commlatency(c) is not None
+        or is_objective_col(c)
+    )
 
 
 def col_used_in_joining(c):
@@ -290,6 +385,7 @@ def col_used_in_joining(c):
     return (
         col_used_in_pareto(c)
         or is_fused_loop_col(c)
+        or is_binding_col(c)
         or is_tensor_col(c)
         or is_n_iterations_col(c)
     )

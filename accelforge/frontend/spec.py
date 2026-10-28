@@ -12,6 +12,7 @@ from accelforge.frontend.arch import (
     Container,
     Spatialable,
 )
+from accelforge.frontend.arch._flattened_arch import FlattenedArch
 
 from accelforge.frontend.workload import Workload
 from accelforge.frontend.variables import Variables
@@ -156,10 +157,12 @@ class Spec(EvalableModel):
             st["workload"] = evaluated_workload
 
             if einsum_name is not None:
-                renames = evaluated_workload.einsums[einsum_name].renames
-                st.update(**{k.name: k.source for k in renames})
+                einsum = evaluated_workload.einsums[einsum_name]
+                st.update(**{k.name: k.source for k in einsum.renames})
             else:
                 st.update(evaluated_workload.empty_renames())
+            tags = evaluated_workload._tags_as_bools(einsum_name)
+            st.update(tags)
 
             if eval_arch:
                 evaluated_arch, st = self.arch._eval_expressions(st)
@@ -175,19 +178,29 @@ class Spec(EvalableModel):
             evaluated_spec._evaluated = True
             return evaluated_spec
 
-    def calculate_component_area_energy_latency_leak(
+    def calculate_component_area_energy_latency_leak(*args, **kwargs):
+        import warnings
+
+        warnings.warn(
+            "calculate_component_area_energy_latency_leak is deprecated. Please use "
+            "calculate_component_costs instead.",
+            DeprecationWarning,
+        )
+
+    def calculate_component_costs(
         self,
         einsum_name: EinsumName | None = None,
         area: bool = True,
         energy: bool = True,
+        throughput: bool = True,
         latency: bool = True,
         leak: bool = True,
     ) -> "Spec":
         """
-        Populates per-component area, energy, latency, and/or leak power. For each
+        Populates per-component area, energy, throughput, and/or leak power. For each
         component, populates the ``area``, ``total_area``, ``leak_power`` and
         ``total_leak_power``. Additionally, for each action of each component, populates
-        the ``<action>.energy`` and ``<action>.latency`` fields. Extends the
+        the ``<action>.energy`` and ``<action>.throughput`` fields. Extends the
         ``component_modeling_log`` field with log messages. Also populates the
         ``component_model`` attribute for each component if not already set.
 
@@ -206,12 +219,14 @@ class Spec(EvalableModel):
             Whether to compute and populate area entries.
         energy : bool, optional
             Whether to compute and populate energy entries.
+        throughput : bool, optional
+            Whether to compute and populate throughput entries.
         latency : bool, optional
             Whether to compute and populate latency entries.
         leak : bool, optional
             Whether to compute and populate leak power entries.
         """
-        if not area and not energy and not latency and not leak:
+        if not area and not energy and not throughput and not latency and not leak:
             return self
 
         models = hwcomponents.get_models(
@@ -233,7 +248,7 @@ class Spec(EvalableModel):
                 e.add_note(
                     "If this error seems to be caused by a missing symbol that depends on \n"
                     "the workload, you may need to provide an appropriate einsum_name to \n"
-                    "calculate_component_area_energy_latency_leak. This may occur if the \n"
+                    "calculate_component_costs. This may occur if the \n"
                     "architecture depends on something in the workload.\n"
                 )
             raise
@@ -249,6 +264,8 @@ class Spec(EvalableModel):
 
             orig: Component = self.arch.find(leaf.name)
             c = leaf
+            prev_log = list(c.component_modeling_log)
+            c.component_modeling_log.clear()
             if area:
                 c = c.calculate_area(models)
                 orig.area = c.area
@@ -258,6 +275,11 @@ class Spec(EvalableModel):
                 for a in c.actions:
                     orig_action = orig.actions[a.name]
                     orig_action.energy = a.energy
+            if throughput:
+                c = c.calculate_action_throughput(models)
+                for a in c.actions:
+                    orig_action = orig.actions[a.name]
+                    orig_action.throughput = a.throughput
             if latency:
                 c = c.calculate_action_latency(models)
                 for a in c.actions:
@@ -267,7 +289,7 @@ class Spec(EvalableModel):
                 c = c.calculate_leak_power(models)
                 orig.leak_power = c.leak_power
                 orig.total_leak_power = c.leak_power * global_fanout
-            orig.component_modeling_log.extend(c.component_modeling_log)
+            orig.component_modeling_log = prev_log + c.component_modeling_log
             orig.component_model = c.component_model
 
         return self
@@ -276,7 +298,7 @@ class Spec(EvalableModel):
         self,
         compute_node: str | Compute | None = None,
         einsum_name: EinsumName | None = None,
-    ) -> list[list[Leaf]] | list[Leaf]:
+    ) -> list[FlattenedArch] | FlattenedArch:
         """
         Return the architecture as paths of ``Leaf`` instances from the highest-level
         node to each ``Compute`` node. Parses arithmetic expressions in the
@@ -350,6 +372,22 @@ class Spec(EvalableModel):
 
         return evaluate_mapping(self)
 
+    def rearrange_workload_to_increase_fusion_opportunity(self):
+        """
+        Rearranges the workload to increase fusion opportunity. Minimizes the sum (size
+        of tensor * distance between Einsums that use the tensor) across all tensors in
+        the workload. Note that this is a heuristic and is not guaranteed to find the
+        optimal ordering.
+        """
+        from copy import deepcopy
+        from accelforge.util._basetypes import EvalableList
+
+        evaluated = deepcopy(self)._spec_eval_expressions(eval_arch=False)
+        order = evaluated.workload._rearrange_to_increase_fusion_opportunity()
+        self.workload.einsums = EvalableList(
+            sorted(self.workload.einsums, key=lambda e: order.index(e.name))
+        )
+
     def map_workload_to_arch(
         self,
         einsum_names: list[EinsumName] | None = None,
@@ -357,7 +395,8 @@ class Spec(EvalableModel):
         print_progress: bool = True,
         print_number_of_pmappings: bool = False,
         _pmapping_row_filter_function: Callable[[pd.Series], bool] | None = None,
-    ) -> Mappings:
+        report_statistics: bool = False,
+    ) -> Mappings | tuple[Mappings, dict]:
         """
         Maps the workload to the architecture using the AccelForge Fast and Fusiest
         Mapper (FFM).
@@ -386,11 +425,15 @@ class Spec(EvalableModel):
             A function that takes in a row of the pmapping dataframe and returns True if
             the row should be included in the final mappings, and False otherwise. If
             None, all rows will be included.
+        report_statistics:
+            If True, also return statistics about joining. See
+            `accelforge.mapper.FFM.join_pmappings`.
 
         Returns
         -------
         Mappings
-            The mappings of the workload to the architecture.
+            The mappings of the workload to the architecture. If ``report_statistics``
+            is True, a tuple of the mappings and the joining statistics.
         """
         from accelforge.mapper.FFM.main import map_workload_to_arch
 
@@ -401,6 +444,7 @@ class Spec(EvalableModel):
             print_progress=print_progress,
             print_number_of_pmappings=print_number_of_pmappings,
             _pmapping_row_filter_function=_pmapping_row_filter_function,
+            report_statistics=report_statistics,
         )
 
 

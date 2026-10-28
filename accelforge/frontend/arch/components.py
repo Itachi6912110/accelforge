@@ -1,6 +1,8 @@
 import copy
+import enum
 import itertools
 import logging
+from numbers import Number
 from accelforge.util._frozenset import oset
 from typing import (
     Any,
@@ -9,12 +11,29 @@ from typing import (
     Self,
     TypeVar,
 )
-from pydantic import ConfigDict
+from pydantic import ConfigDict, PrivateAttr, field_validator, model_validator
 from hwcomponents import (
     ComponentModel,
     get_models,
     get_model,
 )
+
+
+# Verify the installed `hwcomponents` exposes the new `get_action_cost` API. If it
+# can't be imported, the user is on an old hwcomponents that pre-dates the latency ->
+# throughput migration; raise with the full migration notice.
+def _check_hwcomponents_compatibility():
+    try:
+        from hwcomponents import get_action_cost  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            f"AccelForge requires `hwcomponents.get_action_cost` but it could not "
+            f"be imported. Please upgrade hwcomponents."
+        ) from e
+
+
+_check_hwcomponents_compatibility()
+
 
 from accelforge.util._basetypes import (
     EvalableModel,
@@ -28,7 +47,11 @@ from accelforge.util._basetypes import (
 
 from accelforge.util.exceptions import EvaluationError
 from accelforge.util._eval_expressions import eval_expression
-from accelforge.util._setexpressions import InvertibleSet, eval_set_expression
+from accelforge.util._setexpressions import (
+    InvertibleSet,
+    eval_set_expression,
+    eval_set_expression_dict,
+)
 from accelforge.frontend.renames import TensorName
 from accelforge.frontend.arch.constraints import Comparison
 from accelforge.frontend.arch.structure import ArchNode, Branch, Leaf
@@ -61,14 +84,26 @@ class Action(EvalableModel):
 
     latency: EvalsTo[int | float | None] = None
     """
-    Latency of this action. Per-action latency is multiplied by the component's
-    latency_scale and the action's latency_scale.
+    Latency of one call of this action in seconds. Per-action latency is multiplied by
+    the component's latency_scale and the action's latency_scale.
     """
 
     latency_scale: EvalsTo[int | float] = 1
     """
-    The scale factor for dynamic latency of this action. Multiplies this action's
-    latency by this value.
+    The scale factor for latency of this action. Multiplies this action's latency by
+    this value.
+    """
+
+    throughput: EvalsTo[int | float | None] = None
+    """
+    Throughput of this action in actions/second. Per-action throughput is multiplied by
+    the component's throughput_scale and the action's throughput_scale.
+    """
+
+    throughput_scale: EvalsTo[int | float] = 1
+    """
+    The scale factor for throughput of this action. Multiplies this action's throughput
+    by this value.
     """
 
     extra_attributes_for_component_model: EvalExtras = EvalExtras()
@@ -89,8 +124,35 @@ class TensorHolderAction(Action):
     bits_per_action: EvalsTo[int | float] = (
         "1 if bits_per_action is None else bits_per_action"
     )
-    """ The number of bits accessed in this action. For example, setting bits_per_action
-    to 16 means that each call to this action yields 16 bits. """
+    """ 
+    The number of bits accessed in this action. For example, setting bits_per_action to
+    16 means that each call to this action yields 16 bits. Overridden by
+    values_per_action in this action or by the parent component's values per action.
+    """
+
+    values_per_action: EvalsTo[dict] = {}
+    """
+    Sets the number of tensor values that are accessed by each call of this action. Keys
+    are evaluated as expressions and may reference one or more tensors. Overrides
+    bits_per_action, and sets bits_per_action to values_per_action[tensor] *
+    bits_per_value[tensor].
+    """
+
+    def _eval_expressions(self, *args, **kwargs):
+        if getattr(self, "_evaluated", False):
+            return super()._eval_expressions(*args, **kwargs)
+
+        class MyPostCall(_PostCall):
+            def __call__(self, field, value, evaluated, symbol_table):
+                if field == "values_per_action":
+                    evaluated = _eval_tensor2number(
+                        evaluated,
+                        location="values_per_action",
+                        symbol_table=symbol_table,
+                    )
+                return evaluated
+
+        return super()._eval_expressions(*args, **kwargs, post_calls=(MyPostCall(),))
 
 
 _COMPONENT_MODEL_CACHE: dict[tuple, "Component"] = {}
@@ -197,42 +259,53 @@ class Component(Spatialable):
     this action's energy. Multiplies the calculated energy of each action.
     """
 
-    total_latency: str | int | float = "sum(*action2latency.values())"
+    actions_scale: EvalsTo[int | float] = 1
     """
-    An expression representing the total latency of this component in seconds. This is
-    used to calculate the latency of a given Einsum. Special variables available are the
-    following:
-
-    - `min`: The minimum value of all arguments to the expression.
-    - `max`: The maximum value of all arguments to the expression.
-    - `sum`: The sum of all arguments to the expression.
-    - `X_actions`: The number of times action `X` is performed. For example,
-      `read_actions` is the number of times the read action is performed.
-    - `X_latency`: The total latency of all actions of type `X`. For example,
-      `read_latency` is the total latency of all read actions. It is equal to the
-      per-read latency multiplied by the number of read actions.
-    - `action2latency`: A dictionary of action names to their latency.
-
-    Additionally, all component attributes are availble as variables, and all other
-    functions generally available in parsing. Note this expression is evaluated after other
-    component attributes are evaluated.
-
-    For example, the following expression calculates latency assuming that each read or
-    write action takes 1ns: ``1e-9 * (read_actions + write_actions)``.
+    Scales the number of actions performed by this component. Multiplies the action
+    count for each action of this component, which proportionally increases this
+    component's energy and latency.
     """
+
+    total_latency: Any = None
+    """
+    REMOVED. A component's latency is the sum, over its actions, of the action
+    count divided by the action's ``throughput``. Set per-action ``throughput``
+    to control latency. For a storage with separate read and write ports, set
+    ``separate_read_write_ports: True`` instead of a max-over-ports expression.
+    """
+
+    @field_validator("total_latency")
+    @classmethod
+    def _total_latency_removed(cls, v):
+        if v is not None:
+            raise ValueError(
+                "total_latency was removed. A component's latency is the sum over "
+                "its actions of the action count divided by the action's "
+                "throughput, so set per-action `throughput` attributes instead. "
+                "For a storage with separate read and write ports, set "
+                "`separate_read_write_ports: True` to model read and write latency "
+                "independently."
+            )
+        return v
 
     latency_scale: EvalsTo[int | float] = 1
     """
-    The scale factor for the latency of this component. This is used to scale the
-    latency of this component. For example, if the latency is 1 ns and the scale factor
-    is 2, then the latency is 2 ns. Multiplies the calculated latency of each action.
+    The scale factor for the latency of this component. Multiplies the calculated
+    latency of each action.
+    """
+
+    throughput_scale: EvalsTo[int | float] = 1
+    """
+    The scale factor for the throughput of this component. Multiplies the calculated
+    throughput of each action. For example, if the throughput attribute is 1M actions/second and
+    the scale factor is 2, then the final throughput is 2M actions/second.
     """
 
     n_parallel_instances: EvalsTo[int | float] = 1
     """
     The number of parallel instances of this component. Increasing parallel instances
-    will proportionally increase area and leakage, while reducing latency (unless
-    latency calculation is overridden).
+    will proportionally increase area and leakage while reducing latency (unless latency
+    calculation is overridden).
     """
 
     extra_attributes_for_component_model: _ExtraAttrs = _ExtraAttrs()
@@ -274,7 +347,7 @@ class Component(Spatialable):
                 "talk to hwcomponents, but was missing necessary attributes. If you do "
                 "not want to use hwcomponents component_models, ensure that area and "
                 "leak_power are set, as well as, for each action, "
-                f"energy and latency are set.{extra_info}",
+                f"energy, throughput, and latency are set.{extra_info}",
                 source_field=f"{self.name}.component_class",
             )
         return self.component_class
@@ -356,7 +429,7 @@ class Component(Spatialable):
         because they need the Spec's global scope. If you are sure that all necessary
         values are present and not a result of an expression, you can call these
         directly. Otherwise, you can call the
-        ``Spec.calculate_component_area_energy_latency_leak`` and then grab components
+        ``Spec.calculate_component_costs`` and then grab components
         from the returned ``Spec``.
 
         Parameters
@@ -401,7 +474,7 @@ class Component(Spatialable):
                     },
                 )
                 messages.extend(energy.messages)
-                energy = energy.value[0]
+                energy = energy.value.energy
             if self.energy_scale != 1:
                 energy *= self.energy_scale
                 messages.append(f"Scaling {self.name} energy by {self.energy_scale=}")
@@ -435,7 +508,7 @@ class Component(Spatialable):
         because they need the Spec's global scope. If you are sure that all necessary
         values are present and not a result of an expression, you can call these
         directly. Otherwise, you can call the
-        ``Spec.calculate_component_area_energy_latency_leak`` and then grab components
+        ``Spec.calculate_component_costs`` and then grab components
         from the returned ``Spec``.
 
         Parameters
@@ -501,7 +574,7 @@ class Component(Spatialable):
         because they need the Spec's global scope. If you are sure that all necessary
         values are present and not a result of an expression, you can call these
         directly. Otherwise, you can call the
-        ``Spec.calculate_component_area_energy_latency_leak`` and then grab components
+        ``Spec.calculate_component_costs`` and then grab components
         from the returned ``Spec``.
 
         Parameters
@@ -546,6 +619,86 @@ class Component(Spatialable):
             logging.warning(f"Component {self.name} has negative area: {self.area}")
         return self
 
+    def calculate_action_throughput(
+        self,
+        component_models: list[ComponentModel] | None = None,
+        in_place: bool = False,
+    ) -> Self:
+        """
+        Calculates the throughput for each action by this component. Populates the
+        ``<action>.throughput`` field. Extends the ``component_modeling_log`` field with
+        log messages.
+
+        Parameters
+        ----------
+        component_models : list[hwcomponents.ComponentModel] | None
+            The models to use for throughput calculation. If not provided, the models
+            will be found with `hwcomponents.get_models()`.
+        in_place : bool
+            If True, the component will be modified in place. Otherwise, a copy will be
+            returned.
+
+        Returns
+        -------
+        Self
+            A copy of the component with the calculated throughput for each action.
+        """
+        if not in_place:
+            self: Self = self._copy_for_component_modeling()
+
+        messages = self.component_modeling_log
+
+        for action in self.actions:
+            messages.append(
+                f"Calculating throughput for {self.name} action {action.name}."
+            )
+            if action.throughput is not None:
+                throughput = action.throughput
+                messages.append(
+                    f"Setting {self.name} throughput to {action.throughput=}"
+                )
+            elif self._is_dummy():
+                throughput = float("inf")
+                messages.append("Component is dummy. Setting throughput to inf.")
+            else:
+                self.populate_component_model(
+                    component_models,
+                    in_place=True,
+                    trying_to_calculate=f"throughput for action {action.name}",
+                )
+                throughput = self.component_model.try_call_arbitrary_action(
+                    action_name=action.name,
+                    _return_estimation_object=True,
+                    **{
+                        **self._attributes_for_component_model(),
+                        **action._attributes_for_component_model(),
+                    },
+                )
+                messages.extend(throughput.messages)
+                throughput = throughput.value.throughput
+            if self.throughput_scale != 1:
+                throughput *= self.throughput_scale
+                messages.append(
+                    f"Scaling {self.name} throughput by {self.throughput_scale=}"
+                )
+            if action.throughput_scale != 1:
+                throughput *= action.throughput_scale
+                messages.append(
+                    f"Scaling {self.name} throughput by {action.throughput_scale=}"
+                )
+            if self.n_parallel_instances != 1:
+                throughput *= self.n_parallel_instances
+                messages.append(
+                    f"Multiplying {self.name} throughput by {self.n_parallel_instances=}"
+                )
+            action.throughput = throughput
+            if action.throughput < 0:
+                logging.warning(
+                    f"Component {self.name} action {action.name} has negative throughput: "
+                    f"{action.throughput}"
+                )
+        return self
+
     def calculate_action_latency(
         self,
         component_models: list[ComponentModel] | None = None,
@@ -559,8 +712,8 @@ class Component(Spatialable):
         Parameters
         ----------
         component_models : list[hwcomponents.ComponentModel] | None
-            The models to use for latency calculation. If not provided, the models will be
-            found with `hwcomponents.get_models()`.
+            The models to use for latency calculation. If not provided, the models
+            will be found with `hwcomponents.get_models()`.
         in_place : bool
             If True, the component will be modified in place. Otherwise, a copy will be
             returned.
@@ -600,7 +753,7 @@ class Component(Spatialable):
                     },
                 )
                 messages.extend(latency.messages)
-                latency = latency.value[1]
+                latency = latency.value.latency
             if self.latency_scale != 1:
                 latency *= self.latency_scale
                 messages.append(f"Scaling {self.name} latency by {self.latency_scale=}")
@@ -608,11 +761,6 @@ class Component(Spatialable):
                 latency *= action.latency_scale
                 messages.append(
                     f"Scaling {self.name} latency by {action.latency_scale=}"
-                )
-            if self.n_parallel_instances != 1:
-                latency /= self.n_parallel_instances
-                messages.append(
-                    f"Dividing {self.name} latency by {self.n_parallel_instances=}"
                 )
             action.latency = latency
             if action.latency < 0:
@@ -622,27 +770,26 @@ class Component(Spatialable):
                 )
         return self
 
-    def calculate_area_energy_latency_leak(
+    def calculate_component_costs(
         self,
         component_models: list[ComponentModel] | None = None,
         in_place: bool = False,
         _use_cache: bool = False,
     ) -> Self:
         """
-        Calculates the area, energy, latency, and leak power for this component.
+        Calculates the area, energy, leak power, and throughput for this component.
         Populates the ``area``, ``total_area``, ``leak_power``, ``total_leak_power``,
         ``total_latency``, and ``component_modeling_log`` fields of this component.
         Additionally, for each action, populates the ``<action>.area``,
-        ``<action>.energy``, ``<action>.latency``, and ``<action>.leak_power`` fields.
-        Extends the ``component_modeling_log`` field with log messages.
+        ``<action>.energy``, ``<action>.throughput``, and ``<action>.leak_power``
+        fields. Extends the ``component_modeling_log`` field with log messages.
 
         Note that these methods will be called by the Spec when calculating energy and
-        area. If you call them yourself, note that string expressions may not be evaluated
-        because they need the Spec's global scope. If you are sure that all necessary
-        values are present and not a result of an expression, you can call these
-        directly. Otherwise, you can call the
-        ``Spec.calculate_component_area_energy_latency_leak`` and then grab components
-        from the returned ``Spec``.
+        area. If you call them yourself, note that string expressions may not be
+        evaluated because they need the Spec's global scope. If you are sure that all
+        necessary values are present and not a result of an expression, you can call
+        these directly. Otherwise, you can call the ``Spec.calculate_component_costs``
+        and then grab components from the returned ``Spec``.
 
         Parameters
         ----------
@@ -678,8 +825,10 @@ class Component(Spatialable):
                 self.actions = component.actions
                 return self
 
+        self.component_modeling_log = []
         self.calculate_area(component_models, in_place=True)
         self.calculate_action_energy(component_models, in_place=True)
+        self.calculate_action_throughput(component_models, in_place=True)
         self.calculate_action_latency(component_models, in_place=True)
         self.calculate_leak_power(component_models, in_place=True)
         if _use_cache:
@@ -704,6 +853,26 @@ class Component(Spatialable):
             )
         return self
 
+    def _eval_expressions(
+        self,
+        symbol_table: dict[str, Any],
+        order: tuple[str, ...] = (),
+        post_calls: tuple[_PostCall[T], ...] = (),
+        *args,
+        **kwargs,
+    ) -> tuple:
+        class MyPostCall(_PostCall):
+            def __call__(self, field, value, evaluated, symbol_table):
+                if field == "extra_attributes_for_component_model":
+                    symbol_table.update(evaluated.shallow_model_dump())
+                return evaluated
+
+        order = ("extra_attributes_for_component_model",) + order
+
+        return super()._eval_expressions(
+            symbol_table, order, post_calls + (MyPostCall(),), *args, **kwargs
+        )
+
 
 MEMORY_ACTIONS = EvalableList[TensorHolderAction](
     [
@@ -726,17 +895,15 @@ COMPUTE_ACTIONS = EvalableList(
 )
 
 
-def _eval_tensor2bits(
-    toeval: dict[str, Any], location: str, symbol_table: dict[str, Any]
+def _eval_tensor2number(
+    toeval: dict[str, Any],
+    location: str,
+    symbol_table: dict[str, Any],
 ) -> dict[str, Any]:
     result = {}
-    for key, value in toeval.items():
-        key_evaluated = eval_set_expression(
-            expression=key,
-            symbol_table=symbol_table,
-            expected_space=TensorName,
-            location=f"{location} key {key}",
-        ).instance
+    for key, key_evaluated, value in eval_set_expression_dict(
+        toeval, symbol_table, TensorName, location
+    ):
         result[key_evaluated] = eval_expression(
             expression=value,
             symbol_table=symbol_table,
@@ -744,18 +911,47 @@ def _eval_tensor2bits(
             location=location,
         )
 
-    all = symbol_table["All"].instance
-    for k in result:
-        all -= k
-
-    if all:
-        raise EvaluationError(f"Missing bits_per_value_scale for {all}. Have {result}.")
-
-    for a, b in itertools.combinations(result.keys(), 2):
-        if a & b:
-            raise EvaluationError(f"bits_per_value_scale for {a} and {b} overlap")
-
     return {k2: v for k, v in result.items() for k2 in k}
+
+
+_VALID_DIRECTIONS = {"up", "down", "up_and_down"}
+
+
+def _eval_direction(toeval, symbol_table: dict[str, Any]) -> dict[str, str]:
+    """Evaluate a direction field. If a string, expand to all tensors. If a dict,
+    resolve tensor expression keys."""
+    if isinstance(toeval, str):
+        if toeval not in _VALID_DIRECTIONS:
+            raise EvaluationError(
+                f'Invalid direction: "{toeval}". '
+                f"Must be one of {sorted(_VALID_DIRECTIONS)}."
+            )
+        all_tensors = symbol_table["All"].instance
+        return {t: toeval for t in all_tensors}
+
+    result = {}
+    for key, value in toeval.items():
+        if value not in _VALID_DIRECTIONS:
+            raise EvaluationError(
+                f'Invalid direction for {key}: "{value}". '
+                f"Must be one of {sorted(_VALID_DIRECTIONS)}."
+            )
+        key_evaluated = eval_set_expression(
+            expression=key,
+            symbol_table=symbol_table,
+            expected_space=TensorName,
+            location=f"direction key {key}",
+        ).instance
+        result[key_evaluated] = value
+
+    all_tensors = symbol_table["All"].instance
+    for k in result:
+        all_tensors -= k
+
+    if all_tensors:
+        raise EvaluationError(f"Missing direction for {all_tensors}. Have {result}.")
+
+    return {t: v for k, v in result.items() for t in k}
 
 
 class Tensors(EvalableModel):
@@ -787,6 +983,22 @@ class Tensors(EvalableModel):
     A set expression describing which tensors must be backed by this
     :class:`accelforge.frontend.arch.TensorHolder`. If this is not defined, then no
     tensors must be backed.
+    """
+
+    min_stored: EvalsTo[int] = 0
+    """
+    The minimum number of tensors that must be stored in this
+    :class:`accelforge.frontend.arch.TensorHolder`. The mapper only explores keep choices
+    that store at least this many tensors. May be an expression, e.g. ``len(All) - 2`` to
+    store all but two tensors.
+    """
+
+    max_stored: EvalsTo[int] = "len(All)"
+    """
+    The maximum number of tensors that must be stored in this
+    :class:`accelforge.frontend.arch.TensorHolder`. The mapper only explores keep choices
+    that store fewer than this many tensors. May be an expression, e.g. ``len(All) - 1`` to
+    store up to all but one tensor.
     """
 
     tile_shape: EvalableList[Comparison] = []
@@ -889,18 +1101,28 @@ class TensorHolder(Component, Leaf):
     order their nodes may appear in the mapping.
     """
 
-    bits_per_value_scale: EvalsTo[dict] = {"All": 1}
+    bits_per_value: EvalsTo[dict] = {}
     """
-    A scaling factor for the bits per value of the tensors in this `TensorHolder`. If
-    this is a dictionary, keys in the dictionary are evaluated as expressions and may
-    reference one or more tensors.
+    Sets the bits per value for tensors in this `TensorHolder`. Keys are evaluated as
+    expressions and may reference one or more tensors. Tensors not listed use the
+    workload's bits_per_value.
     """
 
     bits_per_action: EvalsTo[int | float | None] = None
     """
     The number of bits accessed in each of this component's actions. Overridden by
     bits_per_action in any action of this component. If set here, acts as a default
-    value for the bits_per_action of all actions of this component.
+    value for the bits_per_action of all actions of this component. Overridden by
+    values_per_action or by values in each action.
+    """
+
+    values_per_action: EvalsTo[dict] = {}
+    """
+    Sets the number of tensor values that are accessed by each action of this
+    `TensorHolder`. Keys are evaluated as expressions and may reference one or more
+    tensors. Overrides bits_per_action, and sets bits_per_action to
+    values_per_action[tensor] * bits_per_value[tensor]. Overridden by values_per_action
+    in any action of this component.
     """
 
     def model_post_init(self, __context__=None) -> None:
@@ -914,15 +1136,36 @@ class TensorHolder(Component, Leaf):
 
         class MyPostCall(_PostCall):
             def __call__(self, field, value, evaluated, symbol_table):
-                if field == "bits_per_value_scale":
-                    evaluated = _eval_tensor2bits(
+                if field == "bits_per_value":
+                    evaluated = _eval_tensor2number(
                         evaluated,
-                        location="bits_per_value_scale",
+                        location="bits_per_value",
+                        symbol_table=symbol_table,
+                    )
+                if field == "values_per_action":
+                    evaluated = _eval_tensor2number(
+                        evaluated,
+                        location="values_per_action",
                         symbol_table=symbol_table,
                     )
                 return evaluated
 
         return super()._eval_expressions(*args, **kwargs, post_calls=(MyPostCall(),))
+
+    def _get_values_per_action(
+        self, action_name: str, tensor_name: TensorName, bits_per_value_default: Number
+    ):
+        action = self.actions[action_name]
+
+        if tensor_name in action.values_per_action:
+            return action.values_per_action[tensor_name]
+        if tensor_name in self.values_per_action:
+            return self.values_per_action[tensor_name]
+
+        tensor_bpv = self.bits_per_value.get(tensor_name, bits_per_value_default)
+        action_bpa = action.bits_per_action
+
+        return action_bpa / tensor_bpv
 
 
 class Container(Leaf, Spatialable):
@@ -942,8 +1185,27 @@ class Memory(TensorHolder):
     size: EvalsTo[int | float]
     """ The size of this `Memory` in bits. """
 
+    min_usage: EvalsTo[int | float] = 0.0
+    """ The minimum usage of this `Memory` as a value from 0 to 1. A mapping
+    is invalid if less than this porportion of the memory is used. Mappers that support
+    it (e.g., FFM) may, if no mappings satisfy this constraint, return the highest-usage
+    mappings. These constraints are disabled for copy Einsums. """
+
+    page_size: EvalsTo[int | float | None] = None
+    """ 
+    If set, every reservation in this `Memory` is rounded up to a multiple of page_size
+    bits.
+    """
+
     actions: EvalableList[TensorHolderAction] = MEMORY_ACTIONS
     """ The actions that this `Memory` can perform. """
+
+    separate_read_write_ports: EvalsTo[bool] = False
+    """
+    If True, reads and writes use independent ports: for latency, this memory is
+    treated as two components, "{name} (read)" and "{name} (write)", which may
+    overlap in time. If False, reads and writes are serialized.
+    """
 
     _n_physical: NoParse[int] = 1
     """
@@ -951,6 +1213,12 @@ class Memory(TensorHolder):
 
     Should always be 1 in the spec, but may be > 1 in a flattened arch since
     physical units may be flattened into only one logical level.
+    """
+
+    skip_initial_output_write: bool = True
+    """
+    If False, the initial value of output tensors will be fetched from above and used to
+    initalize outputs. If True, this initial fetch and fill is skipped.
     """
 
     def _render_node_shape(self) -> str:
@@ -984,10 +1252,15 @@ class Toll(TensorHolder):
     zero.
     """
 
-    direction: Literal["up", "down", "up_and_down"]
+    direction: TryEvalTo[dict]
     """
-    The direction in which data flows through this `Toll`. If "up", then data
-    flows from below `TensorHolder`, through this `Toll` (plus paying
+    The direction in which data flows through this `Toll`. Can be:
+
+    - A string: ``"up"``, ``"down"``, or ``"up_and_down"`` — applies to all tensors.
+    - A dict mapping tensor expressions to direction strings, e.g.
+      ``{input: "down", output: "up"}`` — sets direction per tensor.
+
+    If "up", then data flows from below `TensorHolder`, through this `Toll` (plus paying
     associated costs), and then to the next `TensorHolder` above it. Other data
     movements are assumed to avoid this Toll.
     """
@@ -997,6 +1270,35 @@ class Toll(TensorHolder):
 
     def model_post_init(self, __context__=None) -> None:
         self._update_actions(PROCESSING_STAGE_ACTIONS)
+
+    def _eval_expressions(self, *args, **kwargs):
+        if getattr(self, "_evaluated", False):
+            return super()._eval_expressions(*args, **kwargs)
+
+        class MyPostCall(_PostCall):
+            def __call__(self_pc, field, value, evaluated, symbol_table):
+                if field == "bits_per_value":
+                    evaluated = _eval_tensor2number(
+                        evaluated,
+                        location="bits_per_value",
+                        symbol_table=symbol_table,
+                    )
+                if field == "values_per_action":
+                    evaluated = _eval_tensor2number(
+                        evaluated,
+                        location="values_per_action",
+                        symbol_table=symbol_table,
+                    )
+                if field == "direction":
+                    evaluated = _eval_direction(
+                        evaluated,
+                        symbol_table=symbol_table,
+                    )
+                return evaluated
+
+        return Component._eval_expressions(
+            self, *args, **kwargs, post_calls=(MyPostCall(),)
+        )
 
     def _render_node_shape(self) -> str:
         return "rarrow"
@@ -1009,6 +1311,12 @@ class Compute(Component, Leaf):
     actions: EvalableList[Action] = COMPUTE_ACTIONS
     """ The actions that this `Compute` can perform. """
 
+    skip_initial_output_write: bool = True
+    """
+    If False, the initial value of output tensors will be fetched from above and used to
+    initalize outputs. If True, this initial fetch and fill is skipped.
+    """
+
     def model_post_init(self, __context__=None) -> None:
         self._update_actions(COMPUTE_ACTIONS)
 
@@ -1019,6 +1327,18 @@ class Compute(Component, Leaf):
         return "#E0EEFF"
 
 
+class TopologySpec(enum.StrEnum):
+    MESH = "mesh"
+    ALL_TO_ALL = "all_to_all"
+
+
+NETWORK_ACTIONS = EvalableList(
+    [
+        Action(name="hop"),
+    ]
+)
+
+
 class Network(Component, Leaf):
     """
     Defines a network component.
@@ -1027,11 +1347,21 @@ class Network(Component, Leaf):
     of the spatial nodes from top to bottom.
     """
 
-    bits_per_value_scale: EvalsTo[dict] = {"All": 1}
+    actions: EvalableList[Action] = NETWORK_ACTIONS
+
+    total_latency: None = None
     """
-    A scaling factor for the bits per value of the tensors in this `TensorHolder`. If
-    this is a dictionary, keys in the dictionary are evaluated as expressions and may
-    reference one or more tensors.
+    REMOVED. A network's latency is bandwidth-bound: the traffic over the most
+    congested link divided by the hop action's ``throughput``. Wind-up/down uses
+    max_hops * the hop action's ``latency``. Setting this attribute raises an
+    error.
+    """
+
+    bits_per_value: EvalsTo[dict] = {}
+    """
+    Sets the bits per value for tensors in this `TensorHolder`. Keys are evaluated as
+    expressions and may reference one or more tensors. Tensors not listed use the
+    workload's bits_per_value.
     """
 
     bits_per_action: EvalsTo[int | float | None] = None
@@ -1039,6 +1369,11 @@ class Network(Component, Leaf):
     The number of bits accessed in each of this component's actions. Overridden by
     bits_per_action in any action of this component. If set here, acts as a default
     value for the bits_per_action of all actions of this component.
+    """
+
+    topology: TopologySpec = TopologySpec.MESH
+    """
+    The topology of the network.
     """
 
     def _render_node_shape(self) -> str:
@@ -1055,10 +1390,10 @@ class Network(Component, Leaf):
 
         class MyPostCall(_PostCall):
             def __call__(self, field, value, evaluated, symbol_table):
-                if field == "bits_per_value_scale":
-                    evaluated = _eval_tensor2bits(
+                if field == "bits_per_value":
+                    evaluated = _eval_tensor2number(
                         evaluated,
-                        location="bits_per_value_scale",
+                        location="bits_per_value",
                         symbol_table=symbol_table,
                     )
                 return evaluated

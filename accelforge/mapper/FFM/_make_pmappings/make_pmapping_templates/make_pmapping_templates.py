@@ -11,13 +11,15 @@ import uuid
 from tqdm import tqdm
 
 import accelforge.frontend.arch as arch
-from accelforge.util._frozenset import oset
+from accelforge.frontend.arch._flattened_arch import FlattenedArch
+from accelforge.util._frozenset import fzs, oset
 from accelforge.frontend.mapping import (
     Compute,
     Loop,
     Mapping,
     MappingNode,
     Spatial,
+    Storage,
     TensorHolder,
     Temporal,
 )
@@ -52,6 +54,7 @@ from accelforge.mapper.FFM._make_pmappings.contraints.constraints import (
 from accelforge.mapper.FFM._make_pmappings.make_pmapping_templates.make_loops import (
     insert_temporal_loops,
     insert_spatial_loops,
+    label_imperfect_tile_shapes,
 )
 from accelforge.mapper.FFM._make_pmappings.pmapper_job import (
     Job,
@@ -85,7 +88,7 @@ def unpack_loops_to_rank_variables(mapping: List[MappingNode]):
 # Iterate over mappings
 # =================================================================================================
 def place_missing_temporal_loops(
-    mapping: List[MappingNode], einsum: Einsum, flattened_arch: list[arch.Leaf]
+    mapping: List[MappingNode], einsum: Einsum, flattened_arch: FlattenedArch
 ):
     """
     Adds temporal loops to the mapping to fill in any rank variables that are missing.
@@ -131,7 +134,7 @@ def place_missing_temporal_loops(
 
 def remove_unordered_spatial_temporal_loops(
     mapping: list[MappingNode],
-    flattened_arch: list[arch.Leaf],
+    flattened_arch: FlattenedArch,
     einsum: Einsum,
     explore_unordered_spatial_loops: bool = True,
 ):
@@ -257,7 +260,7 @@ def assert_proper_fusion_labeling(
 def iterate_mappings_no_constraints(
     spec: Spec,
     einsum_name: str,
-    flattened_arch: list[arch.Leaf],
+    flattened_arch: FlattenedArch,
     rank_variable_bounds: dict[RankVariable, int],
     job: Job,
 ) -> Iterator[tuple[Mapping, SymbolTable, arch.Compute, int]]:
@@ -270,7 +273,14 @@ def iterate_mappings_no_constraints(
         raise ValueError("No memory found in architecture")
 
     einsum = spec.workload.einsums[einsum_name]
-    symbol_table = {r.name: r.source for r in einsum.renames}
+    tags = spec.workload._tags_as_bools(einsum_name)
+    # Same symbols the arch expressions were evaluated with in the Spec.
+    symbol_table = {
+        **spec.variables.shallow_model_dump(),
+        **{r.name: r.source for r in einsum.renames},
+        **tags,
+        **spec.arch.variables.shallow_model_dump(),
+    }
     fusable_tensors = job.fusable_tensors
 
     ranks_with_tile_pattern = oset(
@@ -327,10 +337,26 @@ def iterate_mappings_no_constraints(
             yield mapping, symbol_table, compute, n_orders
 
 
+def _template_dedup_key(mapping: Mapping) -> tuple:
+    key = []
+    storage_group = []
+    for node in mapping.nodes:
+        if isinstance(node, TensorHolder):
+            storage_group.append(node.compact_str())
+        else:
+            if storage_group:
+                key.append(fzs(storage_group))
+                storage_group = []
+            key.append(node.compact_str())
+    if storage_group:
+        key.append(fzs(storage_group))
+    return tuple(key)
+
+
 def iterate_mappings_constraints(
     spec: Spec,
     einsum_names: list[str] | str,
-    flattened_arch: list[arch.Leaf],
+    flattened_arch: FlattenedArch,
     rank_variable_bounds: dict[RankVariable, int],
     tensor_to_relevancy: dict[
         TensorName, dict[RankVariable, Relevant | PartiallyRelevant]
@@ -340,6 +366,7 @@ def iterate_mappings_constraints(
     compute_name = flattened_arch[-1].name
 
     n_yielded = 0
+    seen_templates = set()
 
     if isinstance(einsum_names, str):
         einsum_names = [einsum_names]
@@ -386,9 +413,18 @@ def iterate_mappings_constraints(
 
                 # MAPPING MUST NOT BE MODIFIED AFTER constraints.set_loop_indices
                 constraints.set_loop_indices(mapping)
+                label_imperfect_tile_shapes(
+                    mapping, spec.workload.einsums[einsum_name], job
+                )
 
                 mapping = Mapping(nodes=[copy.copy(n) for n in mapping])
                 mapping._n_loop_orders = n_orders
+
+                key = _template_dedup_key(mapping)
+                if key in seen_templates:
+                    continue
+                seen_templates.add(key)
+
                 yield mapping, constraints, symbol_table
                 n_yielded += 1
                 if n_yielded >= spec.mapper.max_pmapping_templates_per_einsum:
@@ -400,6 +436,41 @@ def iterate_mappings_constraints(
                         not in spec.mapper._only_output_pmapping_with_index
                     ):
                         return
+
+
+def infer_default_binding(mapping: Mapping, job: Job):
+    """
+    Insert a non-duplicating binding for distributed memories.
+    """
+    last_distributed_storage = None
+    irrelevant_rvs = None
+    for node in mapping.nodes:
+        if isinstance(node, Storage):
+            last_distributed_storage = None
+            irrelevant_rvs = None
+            component = node.component_object
+            assert isinstance(component, arch.Spatialable), f"{component}"
+            if not component._is_distributed():
+                continue
+            assert isinstance(component, arch.Memory)
+            assert len(node.tensors) == 1
+            last_distributed_storage = node
+            tensor = next(iter(node.tensors))
+            irrelevant_rvs = job.einsum.tensor2irrelevant_rank_variables[tensor]
+        elif isinstance(node, Spatial) and last_distributed_storage is not None:
+            binding_spatial = node.model_copy()
+            rv = binding_spatial.rank_variable
+            if rv in irrelevant_rvs:
+                raise NotImplementedError(
+                    f"Can not infer a binding for distributed memory "
+                    f"{last_distributed_storage.component}: spatial loop over {rv}, "
+                    f"which is irrelevant to tensor {tensor}"
+                )
+            else:
+                ranks = job.einsum.tensor_accesses[tensor].rank_variable2ranks[rv]
+                assert len(ranks) == 1
+                binding_spatial.rank_variable = next(iter(ranks))
+            last_distributed_storage.binding.append(binding_spatial)
 
 
 # =================================================================================================
@@ -439,6 +510,9 @@ def make_pmapping_templates(job: Job, print_progress: bool = True) -> SameEinsum
             continue
         if isinstance(only_output_index, set) and i not in only_output_index:
             continue
+
+        infer_default_binding(mapping, job)
+
         new_job = copy.copy(job)
         new_job.mapping = mapping
         new_job.mapping._template_index = i

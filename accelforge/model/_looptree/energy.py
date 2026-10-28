@@ -18,6 +18,7 @@ from accelforge.model._looptree.types import Network
 def gather_actions(
     looptree_results: SymbolicAnalysisOutput,
     bindings: dict[str, str],
+    spec: Spec,
     verbose: bool = False,
     use_name=False,
 ):
@@ -39,17 +40,14 @@ def gather_actions(
         else:
             level = bindings[level]
 
-        key = buffet_keyer(buffet, "read")
-        if key not in actions:
-            actions[key] = ActionCount.default()
-        actions[key].total += accesses.net_total_read_actions()
-        actions[key].max_per_unit += accesses.net_max_per_unit_read_actions()
-
-        key = buffet_keyer(buffet, "write")
-        if key not in actions:
-            actions[key] = ActionCount.default()
-        actions[key].total += accesses.net_total_write_actions()
-        actions[key].max_per_unit += accesses.net_max_per_unit_write_actions()
+        net_total = accesses.net_total_actions()
+        net_max_per_unit = accesses.net_max_per_unit_actions()
+        for action_name in net_total:
+            key = buffet_keyer(buffet, action_name)
+            if key not in actions:
+                actions[key] = ActionCount.default()
+            actions[key].total += net_total[action_name]
+            actions[key].max_per_unit += net_max_per_unit[action_name]
 
     for compute, ops in looptree_results.compute_stats.items():
         key = compute_keyer(compute, "compute")
@@ -59,13 +57,25 @@ def gather_actions(
         actions[key].max_per_unit += ops.max_per_unit_ops
 
     for network, stats in looptree_results.network_stats.items():
-        key = network_keyer(network, "hops")
+        key = network_keyer(network, "hop")
         if key not in actions:
             actions[key] = ActionCount.default()
         actions[key].total += stats.total_hops
         actions[key].max_per_unit += stats.max_hops
 
+    _apply_actions_scale(actions, spec)
+
     return actions
+
+
+def _apply_actions_scale(actions, spec):
+    components = {}
+    for key, count in actions.items():
+        if key.level not in components:
+            components[key.level] = spec.arch.find(key.level)
+        scale = getattr(components[key.level], "actions_scale", 1)
+        count.total *= scale
+        count.max_per_unit *= scale
 
 
 def _get_buffet_keyer(verbose, use_name, bindings):

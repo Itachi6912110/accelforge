@@ -28,7 +28,7 @@ depends on the number of accesses to the component. They may be accessed in two 
 The number of actions incurred by accesses for each tensor are equal to the number of
 values accessed times the bits per value of the tensor (determined by the workload),
 divided by the :py:attr:`~accelforge.frontend.arch.TensorHolderAction.bits_per_action`
-attribute. attribute. For example, if 1024 values are accessed with a bits per value of
+attribute. For example, if 1024 values are accessed with a bits per value of
 16 bits and :py:attr:`~accelforge.frontend.arch.TensorHolderAction.bits_per_action` is
 32, then 1024 * 16 / 32 = 512 actions are incurred.
 
@@ -43,12 +43,15 @@ is set to a different value.
 Calculating Latency from a Pmapping
 -----------------------------------
 
-The total latency of a component, defined in the class's
-:py:obj:`~accelforge.frontend.arch.Component.total_latency` field, is a Python
-expression that is evaluated using the component's actions.
+The latency of a component is the sum, over its actions, of the action count (times the
+component's :py:attr:`~accelforge.frontend.arch.Component.actions_scale`) divided by the
+action's :py:attr:`~accelforge.frontend.arch.Action.throughput`. Network components have
+their latency limited by their most-congested link.
 
-The :py:obj:`~accelforge.frontend.arch.Component.total_latency` field is
-:docstring-lower:`accelforge.frontend.arch.Component.total_latency`
+A :py:class:`~accelforge.frontend.arch.Memory` with
+:py:attr:`~accelforge.frontend.arch.Memory.separate_read_write_ports` set is treated as
+two components for latency, "{name} (read)" and "{name} (write)", which may overlap in
+time; otherwise one shared port serializes reads and writes.
 
 
 Calculating Area and Leak Power

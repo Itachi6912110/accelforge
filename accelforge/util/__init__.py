@@ -4,6 +4,7 @@ from ._frozenset import fzs, oset
 from ._mathfuncs import _fillna_and__numeric_cast, _numeric_cast
 from ._eval_expressions import LiteralString
 from .exceptions import EvaluationError
+from .indent import indent, tqdm
 from .parallel import (
     set_n_parallel_jobs,
     get_n_parallel_jobs,
@@ -12,6 +13,7 @@ from .parallel import (
     delayed,
     NUMPY_FLOAT_TYPE,
 )
+from ._permutation import Permutation
 
 __all__ = [
     # From parallel
@@ -25,6 +27,10 @@ __all__ = [
     "oset",
     "LiteralString",
     "EvaluationError",
+    "indent",
+    "tqdm",
+    # Permutation
+    "Permutation",
     # Private but exposed (used internally)
     "_expfmt",
     "_lambdify_type_check",

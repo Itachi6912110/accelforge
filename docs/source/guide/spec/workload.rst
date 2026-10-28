@@ -9,7 +9,7 @@ and a cascade of Einsums is a list of Einsums with data dependencies.
 
 The following is an example workload for three back-to-back matrix multiplications:
 
-.. include:: ../../../../examples/workloads/three_matmuls_annotated.yaml
+.. include:: ../../../../examples/workloads/basic/three_matmuls_annotated.yaml
    :code: yaml
 
 The top-level Workload spec has the following attributes:
@@ -149,8 +149,36 @@ concise notation.
       - {name: I, projection: [b, m, d], output: True}
       renames: {input: I_in, output: I}
 
-Below is the concise notation equivalent of the previously-shown verbose GPT3 6.7B
-example workload:
 
-.. include:: ../../../../examples/workloads/gpt3_6.7B.yaml
-   :code: yaml
+Tags
+----
+
+Einsums may be given any number of ``tags``, which are available when parsing
+expressions (see :ref:`set-expressions`) the architecture.
+
+In the parsing of the architecture for *any* Einsum, the tags of *all* Einsums in the
+workload are available. Tags are set to `True` for the Einsums that have the tag and
+`False` for the others.
+
+Some tags are added automatically:
+
+- ``has_reduction`` for Einsums that perform a reduction
+- ``matmul_like`` for Einsums that perform a reduction, have three tensors, and only use
+  simple rank variables (rank variables that never appear inside an expression such as
+  ``M: m + n``).
+
+.. code-block:: yaml
+
+  workload:
+    einsums:
+    - einsum: A[m, n] = X[m, k] * W[k, n]
+      tags: [this_is_a]
+    - einsum: B[m, n] = A[m, n] * S[m, n]
+
+  # Architecture expressions are evaluated once for each Einsum. This buffer keeps all
+  # tensors for A (tagged this_is_a and matmul_like) and only the inputs for B.
+  arch:
+    nodes:
+    - !Memory
+      name: GlobalBuffer
+      tensors: {keep: All if this_is_a else Inputs}

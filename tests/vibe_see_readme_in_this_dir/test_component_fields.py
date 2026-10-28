@@ -6,7 +6,7 @@ and accelerator_energy_latency.rst:
   - Component.n_parallel_instances
   - Component.total_area, total_leak_power
   - Action.energy_scale, Action.bits_per_action
-  - Component.total_latency expression
+  - Memory.separate_read_write_ports
   - TensorHolder.tensors.keep / may_keep
   - Memory.size and related fields
 """
@@ -55,10 +55,10 @@ class TestActionFields(unittest.TestCase):
     """Test Action model fields."""
 
     def test_action_name_and_energy(self):
-        a = Action(name="read", energy=1.5, latency=0)
+        a = Action(name="read", energy=1.5, throughput=float("inf"))
         self.assertEqual(a.name, "read")
         self.assertEqual(a.energy, 1.5)
-        self.assertEqual(a.latency, 0)
+        self.assertEqual(a.throughput, float("inf"))
 
     def test_action_energy_scale_default(self):
         a = Action(name="read", energy=1.0, latency=0)
@@ -96,7 +96,7 @@ class TestComputeComponentFields(unittest.TestCase):
             name="MAC",
             leak_power=0,
             area=0,
-            actions=[{"name": "compute", "energy": 1, "latency": 1}],
+            actions=[{"name": "compute", "energy": 1, "throughput": 1, "latency": 0}],
         )
         self.assertEqual(c.energy_scale, 1)
 
@@ -105,7 +105,7 @@ class TestComputeComponentFields(unittest.TestCase):
             name="MAC",
             leak_power=0,
             area=0,
-            actions=[{"name": "compute", "energy": 1, "latency": 1}],
+            actions=[{"name": "compute", "energy": 1, "throughput": 1, "latency": 0}],
         )
         self.assertEqual(c.area_scale, 1)
 
@@ -114,7 +114,7 @@ class TestComputeComponentFields(unittest.TestCase):
             name="MAC",
             leak_power=0,
             area=0,
-            actions=[{"name": "compute", "energy": 1, "latency": 1}],
+            actions=[{"name": "compute", "energy": 1, "throughput": 1, "latency": 0}],
         )
         self.assertEqual(c.leak_power_scale, 1)
 
@@ -123,7 +123,7 @@ class TestComputeComponentFields(unittest.TestCase):
             name="MAC",
             leak_power=0,
             area=0,
-            actions=[{"name": "compute", "energy": 1, "latency": 1}],
+            actions=[{"name": "compute", "energy": 1, "throughput": 1, "latency": 0}],
         )
         self.assertEqual(c.n_parallel_instances, 1)
 
@@ -132,7 +132,7 @@ class TestComputeComponentFields(unittest.TestCase):
             name="MAC",
             leak_power=0,
             area=100,
-            actions=[{"name": "compute", "energy": 1, "latency": 1}],
+            actions=[{"name": "compute", "energy": 1, "throughput": 1, "latency": 0}],
             energy_scale=0.5,
             area_scale=2,
             leak_power_scale=0.1,
@@ -146,7 +146,7 @@ class TestComputeComponentFields(unittest.TestCase):
             name="MAC",
             leak_power=0,
             area=0,
-            actions=[{"name": "compute", "energy": 1, "latency": 1}],
+            actions=[{"name": "compute", "energy": 1, "throughput": 1, "latency": 0}],
             n_parallel_instances=4,
         )
         self.assertEqual(c.n_parallel_instances, 4)
@@ -162,8 +162,13 @@ class TestMemoryComponentFields(unittest.TestCase):
             leak_power=0,
             area=0,
             actions=[
-                {"name": "read", "energy": 1, "latency": 0},
-                {"name": "write", "energy": 1, "latency": 0},
+                {"name": "read", "energy": 1, "throughput": float("inf"), "latency": 0},
+                {
+                    "name": "write",
+                    "energy": 1,
+                    "throughput": float("inf"),
+                    "latency": 0,
+                },
             ],
         )
         self.assertEqual(m.size, 1024)
@@ -175,38 +180,44 @@ class TestMemoryComponentFields(unittest.TestCase):
             leak_power=0,
             area=0,
             actions=[
-                {"name": "read", "energy": 1, "latency": 0},
-                {"name": "write", "energy": 1, "latency": 0},
+                {"name": "read", "energy": 1, "throughput": float("inf"), "latency": 0},
+                {
+                    "name": "write",
+                    "energy": 1,
+                    "throughput": float("inf"),
+                    "latency": 0,
+                },
             ],
         )
         self.assertEqual(m.size, "inf")
 
-    def test_memory_total_latency_default(self):
-        m = Memory(
-            name="Buf",
-            size=1024,
-            leak_power=0,
-            area=0,
-            actions=[
-                {"name": "read", "energy": 1, "latency": 0},
-                {"name": "write", "energy": 1, "latency": 0},
-            ],
-        )
-        self.assertIsNotNone(m.total_latency)
+    def test_memory_total_latency_removed(self):
+        with self.assertRaisesRegex(Exception, "total_latency was removed"):
+            Memory(
+                name="Buf",
+                size=1024,
+                leak_power=0,
+                area=0,
+                actions=[
+                    {"name": "read", "energy": 1, "throughput": 1 / 5, "latency": 0},
+                    {"name": "write", "energy": 1, "throughput": 1 / 3, "latency": 0},
+                ],
+                total_latency="max(read_latency, write_latency)",
+            )
 
-    def test_memory_total_latency_expression(self):
+    def test_memory_separate_read_write_ports(self):
         m = Memory(
             name="Buf",
             size=1024,
             leak_power=0,
             area=0,
             actions=[
-                {"name": "read", "energy": 1, "latency": 5},
-                {"name": "write", "energy": 1, "latency": 3},
+                {"name": "read", "energy": 1, "throughput": 1 / 5, "latency": 0},
+                {"name": "write", "energy": 1, "throughput": 1 / 3, "latency": 0},
             ],
-            total_latency="max(read_latency, write_latency)",
+            separate_read_write_ports=True,
         )
-        self.assertEqual(m.total_latency, "max(read_latency, write_latency)")
+        self.assertTrue(m.separate_read_write_ports)
 
     def test_memory_energy_scale_custom(self):
         m = Memory(
@@ -215,8 +226,13 @@ class TestMemoryComponentFields(unittest.TestCase):
             leak_power=0,
             area=0,
             actions=[
-                {"name": "read", "energy": 1, "latency": 0},
-                {"name": "write", "energy": 1, "latency": 0},
+                {"name": "read", "energy": 1, "throughput": float("inf"), "latency": 0},
+                {
+                    "name": "write",
+                    "energy": 1,
+                    "throughput": float("inf"),
+                    "latency": 0,
+                },
             ],
             energy_scale=0.5,
         )
@@ -229,8 +245,13 @@ class TestMemoryComponentFields(unittest.TestCase):
             leak_power=0.01,
             area=100,
             actions=[
-                {"name": "read", "energy": 1, "latency": 0},
-                {"name": "write", "energy": 1, "latency": 0},
+                {"name": "read", "energy": 1, "throughput": float("inf"), "latency": 0},
+                {
+                    "name": "write",
+                    "energy": 1,
+                    "throughput": float("inf"),
+                    "latency": 0,
+                },
             ],
         )
         self.assertEqual(m.area, 100)
@@ -261,8 +282,13 @@ class TestTensorsFields(unittest.TestCase):
             area=0,
             tensors={"keep": "~Intermediates", "may_keep": "All"},
             actions=[
-                {"name": "read", "energy": 1, "latency": 0},
-                {"name": "write", "energy": 1, "latency": 0},
+                {"name": "read", "energy": 1, "throughput": float("inf"), "latency": 0},
+                {
+                    "name": "write",
+                    "energy": 1,
+                    "throughput": float("inf"),
+                    "latency": 0,
+                },
             ],
         )
         self.assertEqual(m.tensors.keep, "~Intermediates")
@@ -286,7 +312,7 @@ class TestTPUComponentFieldsParsed(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         arch_path = EXAMPLES_DIR / "arches" / "tpu_v4i.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
         if not arch_path.exists() or not wl_path.exists():
             raise unittest.SkipTest("YAML not found")
         cls.spec = Spec.from_yaml(arch_path, wl_path)
@@ -301,10 +327,9 @@ class TestTPUComponentFieldsParsed(unittest.TestCase):
         self.assertIn("read", action_names)
         self.assertIn("write", action_names)
 
-    def test_global_buffer_total_latency_is_expression(self):
+    def test_global_buffer_separate_ports(self):
         gb = self.spec.arch.find("GlobalBuffer")
-        self.assertIsInstance(gb.total_latency, str)
-        self.assertIn("max", gb.total_latency)
+        self.assertTrue(gb.separate_read_write_ports)
 
     def test_array_fanout_spatial(self):
         """ProcessingElement has spatial fanouts for reuse."""
@@ -337,7 +362,7 @@ class TestTPUComponentFieldsEvaluated(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         arch_path = EXAMPLES_DIR / "arches" / "tpu_v4i.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
         if not arch_path.exists() or not wl_path.exists():
             raise unittest.SkipTest("YAML not found")
         cls.spec = Spec.from_yaml(arch_path, wl_path)._spec_eval_expressions(
@@ -348,11 +373,9 @@ class TestTPUComponentFieldsEvaluated(unittest.TestCase):
         mm = self.spec.arch.find("MainMemory")
         self.assertEqual(mm.size, math.inf)
 
-    def test_global_buffer_total_latency_stays_expression(self):
-        """total_latency is NOT evaluated by _spec_eval_expressions; it stays as a string."""
+    def test_global_buffer_separate_ports_evaluated(self):
         gb = self.spec.arch.find("GlobalBuffer")
-        self.assertIsInstance(gb.total_latency, str)
-        self.assertIn("max", gb.total_latency)
+        self.assertTrue(gb.separate_read_write_ports)
 
     def test_global_buffer_size_evaluated(self):
         gb = self.spec.arch.find("GlobalBuffer")
@@ -401,7 +424,7 @@ class TestSimpleArchComponentFields(unittest.TestCase):
         write = [a for a in mm.actions if a.name == "write"][0]
         self.assertEqual(read.energy, 1)
         self.assertEqual(write.energy, 1)
-        self.assertEqual(read.latency, 0)
+        self.assertEqual(read.throughput, "inf")
 
     def test_global_buffer_actions(self):
         buf = self.spec.arch.find("GlobalBuffer")
@@ -412,7 +435,7 @@ class TestSimpleArchComponentFields(unittest.TestCase):
         mac = self.spec.arch.find("MAC")
         compute = [a for a in mac.actions if a.name == "compute"][0]
         self.assertEqual(compute.energy, 1)
-        self.assertEqual(compute.latency, 1)
+        self.assertEqual(compute.throughput, 1)
 
 
 # ============================================================================
@@ -430,8 +453,8 @@ class TestTollComponent(unittest.TestCase):
             leak_power=0,
             area=0,
             actions=[
-                {"name": "read", "energy": 0.5, "latency": 1},
-                {"name": "write", "energy": 0.3, "latency": 1},
+                {"name": "read", "energy": 0.5, "throughput": 1, "latency": 0},
+                {"name": "write", "energy": 0.3, "throughput": 1, "latency": 0},
             ],
         )
         self.assertEqual(len(t.actions), 2)

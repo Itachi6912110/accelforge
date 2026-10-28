@@ -47,6 +47,13 @@ class PmappingGroup:
     def copy(self) -> "PmappingGroup":
         return PmappingGroup(self.compatibility, self.mappings.copy())
 
+    def split_in_half(self) -> tuple["PmappingGroup", "PmappingGroup"]:
+        first_mappings, second_mappings = self.mappings.split_in_half()
+        return (
+            PmappingGroup(self.compatibility, first_mappings),
+            PmappingGroup(self.compatibility, second_mappings),
+        )
+
     def __len__(self) -> int:
         return len(self.mappings)
 
@@ -81,20 +88,33 @@ class PmappingGroup:
             live_tensors_post_join
         ), "joined compatibility includes tensors not live after joining"
 
-        still_live_reservations = [
-            r
-            for r in self.compatibility.tensors
-            if r.name in live_tensors_post_join
-            and r.name not in right.compatibility.tensor_names
-        ]
-
+        # Tensors on the right that are copies of a left tensor living in the same
+        # memory level
         duplicated_aliased_tensors = oset()
         for name, my_tensor in self.tensors.items():
             for aliased_tensor in aliased_tensors.get(name, oset()):
                 if (aliased_tensor := right.tensors.get(aliased_tensor, None)) is None:
                     continue
                 if my_tensor.resource_name == aliased_tensor.resource_name:
-                    duplicated_aliased_tensors.add(aliased_tensor.name)
+                    duplicated_aliased_tensors.add(aliased_tensor)
+
+        # Cannot free aliased tensors that will still be alive in this level later. Copy
+        # Einsums will only make one reservation for all of the aliases, and we cannot
+        # free that until all of them have been freed.
+        all_tensors = {**right.tensors, **self.tensors}
+        do_not_free = oset()
+        for name, res in all_tensors.items():
+            if name in live_tensors_post_join:
+                continue
+            for aliased in aliased_tensors.get(name, oset()):
+                other = all_tensors.get(aliased)
+                if (
+                    other is not None
+                    and other.resource_name == res.resource_name
+                    and aliased in live_tensors_post_join
+                ):
+                    do_not_free.add(name)
+                    break
 
         mapping = delayed(self.mappings.merge_next)(
             right.mappings,
@@ -102,6 +122,7 @@ class PmappingGroup:
             compatibility_left=permuted_compatibility_left,
             compatibility_right=permuted_compatibility_right,
             compatibility_joined=compatibility_joined,
+            do_not_free=do_not_free,
             _pmapping_row_filter_function=_pmapping_row_filter_function,
             ignored_resources=ignored_resources,
             _force_allow_invalid_only_for_runtime_test=_force_allow_invalid_only_for_runtime_test,
@@ -225,7 +246,7 @@ class PmappingGroup:
         clear_tile_patterns_and_reservation_indices: bool = False,
         include_permutations: bool = False,
         clear_symbolic_tile_patterns: bool = False,
-        try_permute_into_equivalent: bool = False,
+        combine_equivalent_permutations: bool = False,
         # mixable_ranks: dict[Rank, set[Rank]] = None,
     ) -> (
         dict[Compatibility, list["PmappingGroup"]]
@@ -234,6 +255,14 @@ class PmappingGroup:
         """
         Clears dead tensors (may keep loops), then group PmappingGroups based on
         compatibility.
+
+        Parameters
+        ----------
+        include_permutations: Whether to also create permutations of the
+          compatibility (using `compatibility.make_equivalent_permutations`) to
+          include in the groups
+        combine_equivalent_permutations: Whether to combine pmapping groups that
+          have equivalent compatibilities if permuted.
         """
         grouped = defaultdict(list)
 
@@ -244,17 +273,16 @@ class PmappingGroup:
                 return c.clear_tile_patterns_and_reservation_indices()
             return c
 
-        for s in pmapping_groups:
-            compatibility = s.compatibility.clear_dead_tensors(live_tensors)
+        for pg in pmapping_groups:
+            compatibility = pg.compatibility.clear_dead_tensors(live_tensors)
 
-            if include_permutations or try_permute_into_equivalent:
-                keys = compatibility.make_equivalent_permutations()
-                for t, loop_changes in keys:
-                    # Line below DOES NOT MUTATE. It's check that the permutation works.
-                    s.compatibility.permute(loop_changes)
-                    grouped[clear(t)].append((s, loop_changes))
+            if include_permutations or combine_equivalent_permutations:
+                keys = compatibility.make_equivalent_compatibilities()
+                for t, equivalence in keys:
+                    pg.compatibility.check_loop_permutation(equivalence.loop_permutation)
+                    grouped[clear(t)].append((pg, equivalence))
             else:
-                grouped[clear(compatibility)].append(s)
+                grouped[clear(compatibility)].append(pg)
 
         if clear_tile_patterns_and_reservation_indices:
             for k in grouped:
@@ -269,26 +297,28 @@ class PmappingGroup:
         #             new_grouped.setdefault(c2, []).extend(g)
         #     grouped = new_grouped
 
-        if try_permute_into_equivalent:
+        if combine_equivalent_permutations:
             assert not include_permutations
             new_grouped = {}
-            pmgroups_remaining = oset(id(s) for s in pmapping_groups)
-            for c, g in sorted(grouped.items(), key=lambda x: len(x[1]), reverse=True):
+            pmgroups_remaining = oset(id(pg) for pg in pmapping_groups)
+            for c, pg_lc in sorted(
+                grouped.items(), key=lambda x: len(x[1]), reverse=True
+            ):
                 if not pmgroups_remaining:
                     break
-                g = [
-                    (s, loop_changes)
-                    for s, loop_changes in g
-                    if id(s) in pmgroups_remaining
+                pg_lc = [
+                    (pg, equivalence)
+                    for pg, equivalence in pg_lc
+                    if id(pg) in pmgroups_remaining
                 ]
-                if g:
-                    pmgroups_remaining -= oset(id(s) for s, _ in g)
+                if pg_lc:
+                    pmgroups_remaining -= oset(id(pg) for pg, _ in pg_lc)
                     permuted = [
                         PmappingGroup(
-                            s.compatibility.permute(lc),
-                            s.mappings.clear_irrelevant_columns(s.compatibility),
+                            equivalence.apply(pg.compatibility),
+                            pg.mappings.clear_irrelevant_columns(pg.compatibility),
                         )
-                        for s, lc in g
+                        for pg, equivalence in pg_lc
                     ]
                     new_grouped[c] = permuted
             grouped = new_grouped
@@ -303,7 +333,9 @@ class PmappingGroup:
         _combine_reservations: bool = True,
         print_progress: bool = True,
         pbar_postfix: str = "",
-    ) -> list["PmappingGroup"]:
+        delay: bool = False,
+    ) -> list["PmappingGroup"] | tuple[list["PmappingGroup"], list]:
+        """ Combine pmapping groups that have equivalent compatibilities. """
         pmapping_groups = [s for s in pmapping_groups if len(s.mappings.data) > 0]
         no_combine = []
         if not _combine_reservations:
@@ -317,19 +349,22 @@ class PmappingGroup:
                 pmapping_groups,
                 live_tensors,
                 clear_symbolic_tile_patterns=True,
-                try_permute_into_equivalent=True,
+                combine_equivalent_permutations=True,
             ).values()
         )
         groups_with_one = [g[0] for g in groups if len(g) == 1]
-        if len(groups_with_one) == len(groups):
+        to_concat = [
+            delayed(PmappingGroup.concat)(g, allow_different_compatibilies)
+            for g in groups
+            if len(g) > 1
+        ]
+        if delay:
+            return groups_with_one + no_combine, to_concat
+        if not to_concat:
             return groups_with_one + no_combine
 
         others = parallel(
-            [
-                delayed(PmappingGroup.concat)(g, allow_different_compatibilies)
-                for g in groups
-                if len(g) > 1
-            ],
+            to_concat,
             pbar=f"Grouping pmappings{pbar_postfix}" if print_progress else None,
         )
         return groups_with_one + others + no_combine
@@ -355,8 +390,11 @@ class PmappingGroup:
 
     @staticmethod
     def group(
-        pmapping_groups: list["PmappingGroup"], live_tensors: set[str]
-    ) -> dict[tuple[Compatibility, ...], list[tuple["PmappingGroup", list[int]]]]:
+        pmapping_groups: list["PmappingGroup"],
+        live_tensors: set[str],
+    ) -> dict[
+        tuple[Compatibility, ...], list[tuple["PmappingGroup", "CompatibilityDiff"]]
+    ]:
         x = PmappingGroup._group(
             pmapping_groups,
             live_tensors,

@@ -1,4 +1,6 @@
 import functools
+import itertools
+import re
 from accelforge.util.exceptions import EvaluationError
 from accelforge.util._frozenset import _sorted_iter, oset
 from pydantic import BaseModel, ConfigDict, model_serializer
@@ -24,6 +26,7 @@ class InvertibleSet(BaseModel, Generic[T]):
     space_type: type[T]
     # child_access_name: Optional[str] = None
     element_to_child_space: Optional[dict[str, Any]] = None
+    full_space_element_to_bits_per_value: Optional[dict[str, int]] = None
     _bits_per_value: Optional[int] = None
 
     def __init__(self, *args, **kwargs):
@@ -38,6 +41,20 @@ class InvertibleSet(BaseModel, Generic[T]):
             "space_type": self.space_type.__name__,
             "element_to_child_space": self.element_to_child_space,
             "_bits_per_value": self._bits_per_value,
+        }
+
+    @property
+    def element_to_bits_per_value(self) -> Optional[dict[str, int]]:
+        """If this set holds tensors, the bits per value of each tensor in this set."""
+        if self.full_space_element_to_bits_per_value is None:
+            raise ValueError(
+                f"Can not access element_to_bits_per_value for a set that does not hold "
+                f"tensors: {self.instance}."
+            )
+        return {
+            t: bits
+            for t, bits in self.full_space_element_to_bits_per_value.items()
+            if t in self.instance
         }
 
     @property
@@ -75,23 +92,22 @@ class InvertibleSet(BaseModel, Generic[T]):
         object.__setattr__(self, "__pydantic_private__", pydantic_private or {})
 
     def __deepcopy__(self, memo):
-        """Custom deepcopy implementation to avoid pydantic deepcopy issues."""
+        # Share the immutable fields (frozenset[str], type, int, None) and
+        # only deep-copy the element_to_child_space dict. Faster than
+        # recursing pydantic's deepcopy path.
         import copy
 
-        cls = type(self)
-        # Create a new instance without calling __init__
-        new_obj = cls.__new__(cls)
-        # Mark it in the memo to handle circular references
+        new_obj = type(self).__new__(type(self))
         memo[id(self)] = new_obj
-        # Deep copy the __dict__ directly to avoid triggering setattr
-        new_obj.__dict__.update(copy.deepcopy(self.__dict__, memo))
-        # Initialize pydantic's internal attributes if they don't exist
-        if not hasattr(new_obj, "__pydantic_fields_set__"):
-            object.__setattr__(new_obj, "__pydantic_fields_set__", set())
-        if not hasattr(new_obj, "__pydantic_extra__"):
-            object.__setattr__(new_obj, "__pydantic_extra__", {})
-        if not hasattr(new_obj, "__pydantic_private__"):
-            object.__setattr__(new_obj, "__pydantic_private__", {})
+        for k, v in self.__dict__.items():
+            new_obj.__dict__[k] = (
+                copy.deepcopy(v, memo)
+                if k == "element_to_child_space" and v is not None
+                else v
+            )
+        object.__setattr__(new_obj, "__pydantic_fields_set__", set())
+        object.__setattr__(new_obj, "__pydantic_extra__", {})
+        object.__setattr__(new_obj, "__pydantic_private__", {})
         return new_obj
 
     def __repr__(self):
@@ -117,6 +133,7 @@ class InvertibleSet(BaseModel, Generic[T]):
             space_type=self.space_type,
             # child_access_name=self.child_access_name,
             element_to_child_space=self.element_to_child_space,
+            full_space_element_to_bits_per_value=self.full_space_element_to_bits_per_value,
         )
 
     @staticmethod
@@ -189,6 +206,7 @@ class InvertibleSet(BaseModel, Generic[T]):
                 space_type=self.space_type,
                 # child_access_name=self.child_access_name,
                 element_to_child_space=self.element_to_child_space,
+                full_space_element_to_bits_per_value=self.full_space_element_to_bits_per_value,
             )
 
     @property
@@ -239,6 +257,7 @@ def eval_set_expression(
     expected_space: type[T],
     location: str,
     expected_count: int | None = None,
+    fast_error: bool = False,
 ) -> InvertibleSet[T]:
     try:
         err = None
@@ -268,17 +287,70 @@ def eval_set_expression(
         set_expression_type_check(result, expected_space, expected_count, location)
 
     except Exception as e:
+        if fast_error:
+            err = EvaluationError(f'{e}. Set expression: "{expression}".')
+        else:
 
-        def strformat(v):
-            v = str(v)
-            return v if len(v) <= 100 else v[:100] + "..."
+            def strformat(v):
+                v = str(v)
+                return v if len(v) <= 100 else v[:100] + "..."
 
-        err = EvaluationError(
-            f'{e}. Set expression: "{expression}". Symbol table:\n\t'
-            + "\n\t".join(f"{k}: {strformat(v)}" for k, v in symbol_table.items())
-        )
+            err = EvaluationError(
+                f'{e}. Set expression: "{expression}". Symbol table:\n\t'
+                + "\n\t".join(f"{k}: {strformat(v)}" for k, v in symbol_table.items())
+            )
         if location is not None:
             err.add_field(location)
     if err:
         raise err
     return result
+
+
+def eval_set_expression_dict(
+    d: dict[str, Any],
+    symbol_table: dict[str, InvertibleSet],
+    expected_space: type[T],
+    location: str,
+    disjoint: bool = True,
+) -> list[tuple[str, "frozenset[T]", Any]]:
+    """
+    Evaluate a dict whose keys are set expressions, returning an ordered list of
+    ``(original_key, evaluated_instance, value)``. Implements the "Other" key and checks
+    that keys are disjoint.
+    """
+    items = list(d.items())
+    others = [i for i, (k, _) in enumerate(items) if re.findall(r"\bOther\b", k)]
+    if len(others) > 1:
+        raise EvaluationError(
+            f"Other appears more than once (indexes {others}) in {location}. "
+            "It may appear at most once."
+        )
+
+    evaluated: list[tuple[str, Any, Any]] = []
+
+    symbol_table = symbol_table.copy()
+    symbol_table["Other"] = symbol_table["All"]
+
+    def _eval(i):
+        k, v = items[i]
+        ins = eval_set_expression(
+            expression=k,
+            symbol_table=symbol_table,
+            expected_space=expected_space,
+            location=f"{location}[{k}]",
+        ).instance
+        symbol_table["Other"] -= ins
+        return k, ins, v
+
+    eval_order = [i for i in range(len(items)) if i not in others] + others
+    for i in eval_order:
+        evaluated.append(_eval(i))
+
+    if disjoint:
+        for (ka, a, _), (kb, b, _) in itertools.combinations(evaluated, 2):
+            if a & b:
+                raise EvaluationError(
+                    f"{location} keys {ka} and {kb} overlap on {set(a & b)}."
+                )
+
+    return evaluated

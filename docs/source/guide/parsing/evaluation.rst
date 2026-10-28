@@ -5,12 +5,11 @@ Objects can include expressions that are evaluated when the
 :py:class:`~accelforge.frontend.spec.Spec` is evaluated. Evaluation occurs when the
 :py:func:`~accelforge.frontend.spec.Spec` is going to be used to model the energy, area,
 or latency of an accelerator, such as when the
-:py:func:`~accelforge.frontend.spec.Spec.calculate_component_area_energy_latency_leak`
-method is called.
+:py:func:`~accelforge.frontend.spec.Spec.calculate_component_costs` method is called.
 
-To-be-evaluated expressions can include Python code, and supported
-operations include many standard library functions (*e.g.,* ``range``, ``min``) and
-functions from the ``math`` standard library (*e.g.,* ``log2``, ``ceil``).
+To-be-evaluated expressions can include Python code, and supported operations include
+many standard library functions (*e.g.,* ``range``, ``min``) and functions from the
+``math`` standard library (*e.g.,* ``log2``, ``ceil``).
 
 The scope available for evaluation includes the following in order of increasing
 precedence:
@@ -181,6 +180,9 @@ combination. The following set expressions are supported:
   the workload's execution.
 - ``Shared``: Tensors that are shared between multiple Einsums.
 - ``Tensors``: Alias for ``All``.
+- ``Other``: If used in a dictionary key, resolves to everything not covered by the
+  other keys. May not be used outside of dictionary keys, and may only appear in one
+  key.
 
 Additionally, the following special variables are available:
 
@@ -189,6 +191,10 @@ Additionally, the following special variables are available:
   ``MemoryObject``.
 - ``<Any Tensor Name>``: Resolves to the tensor with the given name. If the tensor is
   not used in the current Einsum, then it resolves to the empty set.
+- ``<Any Tag>``: Einsums may be given ``tags`` (see :ref:`specifying-workload`). Every
+  tag of every Einsum is available as a boolean: True if the current Einsum has the tag
+  and False otherwise.
+
 .. - ``Einsum``: The name of the currently-processed Einsum. May be used in expressions
 ..   such as ``Inputs if Einsum == "Conv" else All``.
 - ``MemoryObject.Tensors``: The set of all tensors that are stored in the memory object.
@@ -206,7 +212,9 @@ the set of all rank variables that index into any of the tensors stored in
 
 Every tensor expression also has a ``bits_per_value`` attribute that returns the number
 of bits per value for the tensor. This can only be called on size-one sets of tensors,
-or else an error will be raised.
+or else an error will be raised. Alternatively, ``element_to_bits_per_value`` returns a
+dictionary mapping each tensor in the set to its bits per value. This can be used for
+any number of tensors in the set.
 
 Additional keys can be defined following the renaming section of the :ref:`Workload and
 Renames Specification <renaming-tensors-rank-variables>`.

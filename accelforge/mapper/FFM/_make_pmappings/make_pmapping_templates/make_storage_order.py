@@ -28,17 +28,6 @@ def get_tensor_choices(
     prioritize_reuse_of_unfused_tensors: bool,
 ) -> Generator[tuple[list[TensorHolder], SymbolTable, arch.Compute], None, None]:
     nodes, compute = nodes[:-1], nodes[-1]
-    # while True:
-    #     if not nodes:
-    #         return
-    #     if not isinstance(nodes[0], arch.Memory):
-    #         nodes = nodes[1:]
-    #         continue
-    #     assert isinstance(nodes[0].enabled, bool)
-    #     if not nodes[0].enabled:
-    #         nodes = nodes[1:]
-    #         continue
-    #     break
     nodes = list(filter(lambda n: isinstance(n, arch.TensorHolder), nodes))
 
     tensors = spec.workload.einsums[einsum_name].tensor_names
@@ -297,6 +286,7 @@ def valid_tensor_holder_order(
     fusable_tensors: set[TensorName],
     fanouts: dict[str, int],
     remaining_choices: list[TensorHolder],
+    is_copy_op: bool = False,
 ):
     memory_to_satisfied_constraints: dict[str, set] = {}
 
@@ -435,6 +425,18 @@ def valid_tensor_holder_order(
                             False,
                             f"{shared} is stored in back-to-back storage nodes, and could have bypassed the outer one.",
                         )
+
+            # Nodes for the same memory level must be back-to-back for copy ops because
+            # we wouldn't store both a full tensor and a partition of the tensor in the
+            # same memory at the same time
+            if is_copy_op and s1 == s2:
+                between = mapping[i + 1 : j]
+                holders_between = [n for n in between if isinstance(n, TensorHolder)]
+                if any(h.component != s1 for h in holders_between):
+                    return (
+                        False,
+                        f"Nodes for memory level {s1} are not back-to-back."
+                    )
 
     for i, m0 in enumerate(mapping):
         for j, m1 in enumerate(mapping[i:]):

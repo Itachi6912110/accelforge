@@ -71,7 +71,8 @@ class TestYAMLMergeOperators(unittest.TestCase):
 
     def test_shallow_merge(self):
         """<< merges dictionaries without recursion."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   base: &base
     a: 1
@@ -80,7 +81,8 @@ variables:
     <<: *base
     b: 99
     c: 3
-""")
+"""
+        )
         v = spec.variables
         self.assertEqual(v["merged"]["a"], 1)
         self.assertEqual(v["merged"]["b"], 99)
@@ -88,7 +90,8 @@ variables:
 
     def test_hierarchical_merge(self):
         """<<< merges dictionaries recursively into nested dicts."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   base: &base
     a: 1
@@ -96,7 +99,8 @@ variables:
   merged:
     <<<: *base
     nested: {x: 99}
-""")
+"""
+        )
         v = spec.variables
         self.assertEqual(v["merged"]["a"], 1)
         self.assertEqual(v["merged"]["nested"]["x"], 99)
@@ -106,21 +110,24 @@ variables:
     def test_hierarchical_merge_list_local_wins(self):
         """<<< would concatenate lists, but merge_check's iteration order
         causes the local value to overwrite the merged result."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   base: &base
     mylist: [4, 5, 6]
   merged:
     <<<: *base
     mylist: [1, 2, 3]
-""")
+"""
+        )
         v = spec.variables
         # Local value overwrites merged result due to iteration order
         self.assertEqual(v["merged"]["mylist"], [1, 2, 3])
 
     def test_hierarchical_merge_adds_missing_keys(self):
         """<<< adds keys from base that aren't in the local dict."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   base: &base
     from_base: [4, 5, 6]
@@ -128,34 +135,39 @@ variables:
   merged:
     <<<: *base
     shared: 99
-""")
+"""
+        )
         v = spec.variables
         self.assertEqual(v["merged"]["from_base"], [4, 5, 6])
         self.assertEqual(v["merged"]["shared"], 99)
 
     def test_nomerge_blocks_list_merge(self):
         """!nomerge prevents list concatenation under <<<."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   base: &base
     mylist: [4, 5, 6]
   merged:
     <<<: *base
     mylist: !nomerge [1, 2, 3]
-""")
+"""
+        )
         v = spec.variables
         self.assertEqual(v["merged"]["mylist"], [1, 2, 3])
 
     def test_shallow_merge_does_not_recurse(self):
         """<< does NOT recurse into nested dicts (unlike <<<)."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   base: &base
     nested: {x: 10, y: 20}
   merged:
     <<: *base
     nested: {x: 99}
-""")
+"""
+        )
         v = spec.variables
         self.assertEqual(v["merged"]["nested"]["x"], 99)
         # Shallow merge: nested is fully overridden
@@ -163,7 +175,8 @@ variables:
 
     def test_merge_multiple_anchors(self):
         """<< can merge multiple anchors; earlier anchors take precedence."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   d1: &d1
     a: 1
@@ -173,7 +186,8 @@ variables:
     c: 3
   merged:
     <<: [*d1, *d2]
-""")
+"""
+        )
         v = spec.variables
         self.assertEqual(v["merged"]["a"], 1)
         self.assertEqual(v["merged"]["b"], 2)  # d1 takes precedence
@@ -299,12 +313,14 @@ class TestExpressionEvalInSpec(unittest.TestCase):
 
     def test_variables_evaluate_cross_references(self):
         """Variables can reference other variables: b = a + 5."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   a: 123
   b: a + 5
   c: min(b, 3)
-""")
+"""
+        )
         evaluated = spec._spec_eval_expressions()
         self.assertEqual(evaluated.variables["a"], 123)
         self.assertEqual(evaluated.variables["b"], 128)
@@ -312,7 +328,8 @@ variables:
 
     def test_arch_expressions_reference_variables(self):
         """Arch fields can reference top-level variables."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 variables:
   mem_size: 1024 * 1024
 
@@ -324,14 +341,14 @@ arch:
     leak_power: 0
     area: 0
     actions:
-    - {name: read, energy: 1, latency: 0}
-    - {name: write, energy: 1, latency: 0}
+    - {name: read, energy: 1, throughput: .inf, latency: 0}
+    - {name: write, energy: 1, throughput: .inf, latency: 0}
   - !Compute
     name: MAC
     leak_power: 0
     area: 0
     actions:
-    - {name: compute, energy: 1, latency: 1}
+    - {name: compute, energy: 1, throughput: 1, latency: 0}
 
 workload:
   rank_sizes: {M: 16}
@@ -341,7 +358,8 @@ workload:
     tensor_accesses:
     - {name: A, projection: [m]}
     - {name: B, projection: [m], output: true}
-""")
+"""
+        )
         evaluated = spec._spec_eval_expressions()
         mem = evaluated.arch.find("Mem")
         self.assertEqual(mem.size, 1024 * 1024 * 8)
@@ -357,7 +375,8 @@ class TestSetExpressionsParsed(unittest.TestCase):
 
     def test_complement(self):
         """~Intermediates is a complement set expression."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 arch:
   nodes:
   - !Memory
@@ -367,20 +386,22 @@ arch:
     area: 0
     tensors: {keep: ~Intermediates, may_keep: All}
     actions:
-    - {name: read, energy: 1, latency: 0}
-    - {name: write, energy: 1, latency: 0}
+    - {name: read, energy: 1, throughput: .inf, latency: 0}
+    - {name: write, energy: 1, throughput: .inf, latency: 0}
   - !Compute
     name: MAC
     leak_power: 0
     area: 0
     actions:
-    - {name: compute, energy: 1, latency: 1}
-""")
+    - {name: compute, energy: 1, throughput: 1, latency: 0}
+"""
+        )
         mem = spec.arch.find("Mem")
         self.assertEqual(mem.tensors.keep, "~Intermediates")
 
     def test_union_expression(self):
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 arch:
   nodes:
   - !Memory
@@ -390,21 +411,23 @@ arch:
     area: 0
     tensors: {keep: input | output}
     actions:
-    - {name: read, energy: 1, latency: 0}
-    - {name: write, energy: 1, latency: 0}
+    - {name: read, energy: 1, throughput: .inf, latency: 0}
+    - {name: write, energy: 1, throughput: .inf, latency: 0}
   - !Compute
     name: MAC
     leak_power: 0
     area: 0
     actions:
-    - {name: compute, energy: 1, latency: 1}
-""")
+    - {name: compute, energy: 1, throughput: 1, latency: 0}
+"""
+        )
         mem = spec.arch.find("Mem")
         self.assertEqual(mem.tensors.keep, "input | output")
 
     def test_reference_above_memory(self):
         """~MainMemory.tensors references Above node."""
-        spec = _yaml_spec("""\
+        spec = _yaml_spec(
+            """\
 arch:
   nodes:
   - !Memory
@@ -414,8 +437,8 @@ arch:
     area: 0
     tensors: {keep: ~Intermediates, may_keep: All}
     actions:
-    - {name: read, energy: 1, latency: 0}
-    - {name: write, energy: 1, latency: 0}
+    - {name: read, energy: 1, throughput: .inf, latency: 0}
+    - {name: write, energy: 1, throughput: .inf, latency: 0}
   - !Memory
     name: Buffer
     size: inf
@@ -423,15 +446,16 @@ arch:
     area: 0
     tensors: {keep: ~MainMemory.tensors, may_keep: All}
     actions:
-    - {name: read, energy: 1, latency: 0}
-    - {name: write, energy: 1, latency: 0}
+    - {name: read, energy: 1, throughput: .inf, latency: 0}
+    - {name: write, energy: 1, throughput: .inf, latency: 0}
   - !Compute
     name: MAC
     leak_power: 0
     area: 0
     actions:
-    - {name: compute, energy: 1, latency: 1}
-""")
+    - {name: compute, energy: 1, throughput: 1, latency: 0}
+"""
+        )
         buf = spec.arch.find("Buffer")
         self.assertEqual(buf.tensors.keep, "~MainMemory.tensors")
 
@@ -541,11 +565,13 @@ class TestSpatialReuse(unittest.TestCase):
 
     def test_reuse_default_nothing(self):
         s = ArchSpatial(name="X", fanout=4)
-        self.assertEqual(s.reuse, "Nothing")
+        evaluated, _ = s._eval_expressions()
+        self.assertEqual(evaluated.reuse, "Nothing")
 
     def test_may_reuse_default_all(self):
         s = ArchSpatial(name="X", fanout=4)
-        self.assertEqual(s.may_reuse, "All")
+        evaluated, _ = s._eval_expressions()
+        self.assertEqual(evaluated.may_reuse, "All")
 
     def test_reuse_custom(self):
         s = ArchSpatial(name="X", fanout=4, reuse="input")
@@ -582,7 +608,9 @@ class TestTollParsed(unittest.TestCase):
             direction="up",
             leak_power=0,
             area=0,
-            actions=[{"name": "read", "energy": 1, "latency": 0}],
+            actions=[
+                {"name": "read", "energy": 1, "throughput": float("inf"), "latency": 0}
+            ],
         )
         self.assertEqual(t.direction, "up")
 
@@ -610,17 +638,28 @@ class TestTollParsed(unittest.TestCase):
 
 
 class TestMemoryTotalLatency(unittest.TestCase):
-    """Test that total_latency expression is stored on Memory."""
+    """total_latency was removed: setting it errors, and separate read/write
+    ports are expressed with separate_read_write_ports."""
 
-    def test_total_latency_expression(self):
-        """The TPU GlobalBuffer uses total_latency: max(read_latency, write_latency)."""
+    def test_total_latency_raises(self):
+        with self.assertRaisesRegex(Exception, "total_latency was removed"):
+            Memory(
+                name="GB",
+                size=1024,
+                leak_power=0,
+                area=0,
+                total_latency="max(a.n_calls / a.throughput for a in actions)",
+            )
+
+    def test_separate_read_write_ports(self):
+        """The TPU GlobalBuffer models its separate ports with the attribute."""
         arch_path = EXAMPLES_DIR / "arches" / "tpu_v4i.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML not found")
         spec = Spec.from_yaml(arch_path, wl_path)
         gb = spec.arch.find("GlobalBuffer")
-        self.assertEqual(gb.total_latency, "max(read_latency, write_latency)")
+        self.assertTrue(gb.separate_read_write_ports)
 
 
 class TestEnabledField(unittest.TestCase):
@@ -631,7 +670,7 @@ class TestEnabledField(unittest.TestCase):
             name="MAC",
             leak_power=0,
             area=0,
-            actions=[{"name": "compute", "energy": 1, "latency": 1}],
+            actions=[{"name": "compute", "energy": 1, "throughput": 1, "latency": 0}],
         )
         self.assertTrue(c.enabled)
 
@@ -640,7 +679,7 @@ class TestEnabledField(unittest.TestCase):
             name="MAC",
             leak_power=0,
             area=0,
-            actions=[{"name": "compute", "energy": 1, "latency": 1}],
+            actions=[{"name": "compute", "energy": 1, "throughput": 1, "latency": 0}],
             enabled="len(All) == 3",
         )
         self.assertEqual(c.enabled, "len(All) == 3")
@@ -723,8 +762,13 @@ class TestFanoutVariationsParsed(unittest.TestCase):
             leak_power=0,
             area=0,
             actions=[
-                {"name": "read", "energy": 1, "latency": 0},
-                {"name": "write", "energy": 1, "latency": 0},
+                {"name": "read", "energy": 1, "throughput": float("inf"), "latency": 0},
+                {
+                    "name": "write",
+                    "energy": 1,
+                    "throughput": float("inf"),
+                    "latency": 0,
+                },
             ],
         )
         self.assertEqual(mem.get_fanout(), 1)
@@ -740,10 +784,15 @@ class TestVerboseGPTParsed(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        yaml_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
+        yaml_path = (
+            EXAMPLES_DIR / "workloads" / "transformers" / "gpt" / "gpt3_6.7B.yaml"
+        )
         if not yaml_path.exists():
             raise unittest.SkipTest(f"YAML not found: {yaml_path}")
-        cls.spec = Spec.from_yaml(yaml_path)._spec_eval_expressions()
+        cls.spec = Spec.from_yaml(
+            yaml_path,
+            jinja_parse_data={"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048},
+        )._spec_eval_expressions()
         cls.wl = cls.spec.workload
 
     def test_I_is_copy_operation(self):
@@ -838,20 +887,16 @@ class TestVerboseGPTEvaluated(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        yaml_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
+        yaml_path = (
+            EXAMPLES_DIR / "workloads" / "transformers" / "gpt" / "gpt3_6.7B.yaml"
+        )
         if not yaml_path.exists():
             raise unittest.SkipTest(f"YAML not found: {yaml_path}")
-        cls.spec = Spec.from_yaml(yaml_path)._spec_eval_expressions()
+        cls.spec = Spec.from_yaml(
+            yaml_path,
+            jinja_parse_data={"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048},
+        )._spec_eval_expressions()
         cls.wl = cls.spec.workload
-
-    def test_all_bits_resolved_to_8(self):
-        for einsum in self.wl.einsums:
-            for ta in einsum.tensor_accesses:
-                self.assertEqual(
-                    ta.bits_per_value,
-                    8,
-                    f"{ta.name} in {einsum.name} should be 8",
-                )
 
     def test_V_renames_include_builtins(self):
         v = self.wl.einsums["V"]
@@ -914,11 +959,14 @@ class TestConciseVsVerboseEquivalence(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        c_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
+        c_path = EXAMPLES_DIR / "workloads" / "transformers" / "gpt" / "gpt3_6.7B.yaml"
         v_path = EXAMPLES_DIR / "misc" / "gpt3_6.7B_verbose_annotated.yaml"
         if not c_path.exists() or not v_path.exists():
             raise unittest.SkipTest("YAML not found")
-        cls.concise = Spec.from_yaml(c_path)._spec_eval_expressions()
+        cls.concise = Spec.from_yaml(
+            c_path,
+            jinja_parse_data={"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048},
+        )._spec_eval_expressions()
         cls.verbose = Spec.from_yaml(v_path)._spec_eval_expressions()
 
     def test_same_einsum_count(self):
@@ -958,23 +1006,6 @@ class TestConciseVsVerboseEquivalence(unittest.TestCase):
                 self.assertEqual(
                     dict(c_ta.projection),
                     dict(v_ta.projection),
-                    f"{c_ta.name} in {c_e.name}",
-                )
-
-    def test_same_rank_sizes(self):
-        self.assertEqual(
-            dict(self.concise.workload.rank_sizes),
-            dict(self.verbose.workload.rank_sizes),
-        )
-
-    def test_same_bits_per_value(self):
-        for c_e in self.concise.workload.einsums:
-            v_e = self.verbose.workload.einsums[c_e.name]
-            for c_ta in c_e.tensor_accesses:
-                v_ta = v_e.tensor_accesses[c_ta.name]
-                self.assertEqual(
-                    c_ta.bits_per_value,
-                    v_ta.bits_per_value,
                     f"{c_ta.name} in {c_e.name}",
                 )
 

@@ -2,6 +2,7 @@ from collections import defaultdict
 import logging
 from typing import List
 from accelforge._accelerated_imports import np
+from accelforge.frontend.arch._flattened_arch import FlattenedArch
 from accelforge.frontend._workload_isl._symbolic import PartiallyRelevant, Relevant
 import accelforge.frontend.arch as arch
 from accelforge.frontend.arch import (
@@ -162,6 +163,7 @@ def constrained_loops(
     component: str = None,
     one_loop_per_rank_variable: bool = True,
 ) -> list[Loop]:
+    """The first loop nodes containing given rank variables."""
     nodes = []
     remaining_rank_variables = oset(rank_variables)
 
@@ -169,9 +171,7 @@ def constrained_loops(
         to_check = list(enumerate(mapping))
         to_check.reverse()
         if start_index is not None:
-            to_check = [
-                m for i, m in to_check if start_index is None or i <= start_index
-            ]
+            to_check = [m for i, m in to_check if i <= start_index]
     else:
         to_check = list(enumerate(mapping))
         to_check = [m for i, m in to_check if start_index is None or i >= start_index]
@@ -197,7 +197,7 @@ def constrained_loops(
 
 
 def get_constraints(
-    flattened_arch: list[arch.Leaf],
+    flattened_arch: FlattenedArch,
     mapping: List[MappingNode],
     symbol_table: dict[str, InvertibleSet],
     einsum_name: EinsumName,
@@ -229,91 +229,17 @@ def get_constraints(
                 constraint = _TileShapeConstraintLambda(c, new_nodes, exp)
                 constraints.tile_shape_constraints.append(constraint)
 
-        no_refetch = mapping[index].component_object.tensors.no_refetch_from_above
-        exp = symbol_table[m.name] & no_refetch
-
-        nodes = []
-        seen = oset()
-        for no_refetch in exp.iter_one_element_sets():
-            # Start from the first index of the tensor holder, stop at index - 1
-            start_index = 0
-            n = next(iter(no_refetch))
-            while start_index < len(mapping):
-                if (
-                    isinstance(mapping[start_index], TensorHolder)
-                    and n in mapping[start_index].tensors
-                ):
-                    break
-                start_index += 1
-
-            end_index = start_index + 1
-            while end_index < len(mapping):
-                if (
-                    isinstance(mapping[end_index], TensorHolder)
-                    and n in mapping[end_index].tensors
-                    and mapping[end_index].component == m.name
-                ):
-                    break
-                end_index += 1
-            else:
-                # This tensor isn't stored in this component at all. Don't look at any
-                # loops. We can also end up here if the tensor is backed in this
-                # component, in which case we'll start looking below the component &
-                # never find it.
-                end_index = start_index
-
-            for i in range(start_index, min(end_index, len(mapping))):
-                if isinstance(mapping[i], Temporal) and not isinstance(
-                    tensor_to_relevancy[n][mapping[i].rank_variable], Relevant
-                ):
-                    if id(mapping[i]) not in seen:
-                        seen.add(id(mapping[i]))
-                        nodes.append(mapping[i])
-
-        no_resend = mapping[index].component_object.tensors.no_resend_to_below
-        for no_resend in no_resend.iter_one_element_sets():
-            # Start from the first index of this one, stop when we find someone else
-            # below
-            start_index = 0
-            n = next(iter(no_resend))
-            while start_index < len(mapping):
-                if (
-                    isinstance(mapping[start_index], TensorHolder)
-                    and n in mapping[start_index].tensors
-                    and mapping[start_index].component == m.name
-                ):
-                    break
-                start_index += 1
-
-            end_index = start_index + 1
-            while end_index < len(mapping):
-                if (
-                    isinstance(mapping[end_index], TensorHolder)
-                    and n in mapping[end_index].tensors
-                ):
-                    # Can't have two tensor holders for the same tensor + component
-                    assert mapping[end_index].component != m.name
-                    break
-                end_index += 1
-
-            for i in range(start_index, min(end_index, len(mapping))):
-                if isinstance(mapping[i], Temporal) and not isinstance(
-                    tensor_to_relevancy[n][mapping[i].rank_variable], Relevant
-                ):
-                    if id(mapping[i]) not in seen:
-                        seen.add(id(mapping[i]))
-                        nodes.append(mapping[i])
-
-        if nodes:
-            constraints.loop_bounds_constraints.append(
-                _LoopBoundsConstraintLambda(
-                    Comparison(expression=exp, operator="==", value=1), nodes, exp
-                )
+        no_resend_refetch_constraint = (
+            _loop_bound_constraint_from_no_refetch_and_resend(
+                mapping, index, m, symbol_table, tensor_to_relevancy
             )
+        )
+        if no_resend_refetch_constraint is not None:
+            constraints.loop_bounds_constraints.append(no_resend_refetch_constraint)
 
     # Spatial constraints
     for m in flattened_arch:
-        if not isinstance(m, arch.Leaf):
+        if not isinstance(m, arch.Spatialable):
             continue
 
         for dim in m.spatial:
@@ -381,3 +307,90 @@ def get_constraints(
     mapping = constraints.clear_constrained_to_one(mapping, einsum_name)
 
     return mapping, constraints
+
+
+def _loop_bound_constraint_from_no_refetch_and_resend(
+    mapping, index, arch_node, symbol_table, tensor_to_relevancy
+):
+    """Create a loop bound constraint representing no refetch and no resend."""
+    no_refetch = mapping[index].component_object.tensors.no_refetch_from_above
+    exp = symbol_table[arch_node.name] & no_refetch
+
+    nodes = []
+    seen = oset()
+    for no_refetch in exp.iter_one_element_sets():
+        # Start from the first index of the tensor holder, stop at index - 1
+        start_index = 0
+        n = next(iter(no_refetch))
+        while start_index < len(mapping):
+            if (
+                isinstance(mapping[start_index], TensorHolder)
+                and n in mapping[start_index].tensors
+            ):
+                break
+            start_index += 1
+
+        end_index = start_index + 1
+        while end_index < len(mapping):
+            if (
+                isinstance(mapping[end_index], TensorHolder)
+                and n in mapping[end_index].tensors
+                and mapping[end_index].component == arch_node.name
+            ):
+                break
+            end_index += 1
+        else:
+            # This tensor isn't stored in this component at all. Don't look at any
+            # loops. We can also end up here if the tensor is backed in this
+            # component, in which case we'll start looking below the component &
+            # never find it.
+            end_index = start_index
+
+        for i in range(start_index, min(end_index, len(mapping))):
+            if isinstance(mapping[i], Temporal) and not isinstance(
+                tensor_to_relevancy[n][mapping[i].rank_variable], Relevant
+            ):
+                if id(mapping[i]) not in seen:
+                    seen.add(id(mapping[i]))
+                    nodes.append(mapping[i])
+
+    no_resend = mapping[index].component_object.tensors.no_resend_to_below
+    for no_resend in no_resend.iter_one_element_sets():
+        # Start from the first index of this one, stop when we find someone else
+        # below
+        start_index = 0
+        n = next(iter(no_resend))
+        while start_index < len(mapping):
+            if (
+                isinstance(mapping[start_index], TensorHolder)
+                and n in mapping[start_index].tensors
+                and mapping[start_index].component == arch_node.name
+            ):
+                break
+            start_index += 1
+
+        end_index = start_index + 1
+        while end_index < len(mapping):
+            if (
+                isinstance(mapping[end_index], TensorHolder)
+                and n in mapping[end_index].tensors
+            ):
+                # Can't have two tensor holders for the same tensor + component
+                assert mapping[end_index].component != arch_node.name
+                break
+            end_index += 1
+
+        for i in range(start_index, min(end_index, len(mapping))):
+            if isinstance(mapping[i], Temporal) and not isinstance(
+                tensor_to_relevancy[n][mapping[i].rank_variable], Relevant
+            ):
+                if id(mapping[i]) not in seen:
+                    seen.add(id(mapping[i]))
+                    nodes.append(mapping[i])
+
+    if nodes:
+        return _LoopBoundsConstraintLambda(
+            Comparison(expression=exp, operator="==", value=1), nodes, exp
+        )
+    else:
+        return None

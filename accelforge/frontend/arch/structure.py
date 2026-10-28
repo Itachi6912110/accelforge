@@ -20,12 +20,13 @@ from accelforge.util._basetypes import (
 
 from accelforge.util.exceptions import EvaluationError
 
-from accelforge.frontend.arch.spatialable import Spatialable
+from accelforge.frontend.arch.spatialable import Spatialable, _PhysicalSpatial
+from accelforge.frontend.arch._flattened_arch import FlattenedArch
 
 from pydantic import Discriminator
 from accelforge.util._basetypes import _uninstantiable
 from accelforge.util.parallel import _SVGJupyterRender
-from accelforge.util._visualization import _pydot_graph
+from accelforge.util._visualization import _pydot_graph, _render_svg
 
 _FIND_SENTINEL = object()
 
@@ -185,7 +186,7 @@ class ArchNodes(EvalableList):
     def _eval_expressions(self, symbol_table: dict[str, Any], *args, **kwargs):
         class PostCallArchNode(_PostCall):
             def __call__(self, field, value, evaluated, symbol_table):
-                if isinstance(evaluated, Leaf):
+                if isinstance(evaluated, (Leaf, Array)):
                     symbol_table[evaluated.name] = evaluated
                 return evaluated
 
@@ -314,11 +315,18 @@ class Branch(ArchNode):
 
         return result, non_power_gated_porp
 
+    def _eval_expressions(self, symbol_table: dict[str, Any], *args, **kwargs):
+        if hasattr(self, "name"):
+            symbol_table[self.name] = self
+        return super()._eval_expressions(symbol_table, *args, **kwargs)
+
 
 class Array(Branch, Spatialable):
     name: str
 
     def model_post_init(self, __context__=None) -> None:
+        if not self.spatial:
+            raise EvaluationError(f"Array {self.name} has no spatial fanouts")
         for node in self.nodes:
             if isinstance(node, Fork):
                 raise EvaluationError("cannot have fork inside array")
@@ -328,11 +336,30 @@ class Array(Branch, Spatialable):
         compute_node: str,
         fanout: int = 1,
         return_fanout: bool = False,
-    ):
+    ) -> FlattenedArch:
         from accelforge.frontend.arch.components import Compute
 
         nodes = []
 
+        for node in self.nodes:
+            for s in getattr(node, "spatial", ()):
+                array_fanout = self.get_fanout_along(s.name, default=None)
+                if array_fanout is None:
+                    raise EvaluationError(
+                        f"Spatial {s.name} of {node.name} is not a spatial of Array "
+                        f"{self.name}: {[d.name for d in self.spatial]}"
+                    )
+                if array_fanout % s.fanout:
+                    raise EvaluationError(
+                        f"Spatial {s.name} of {node.name} has fanout {s.fanout}, which "
+                        f"does not divide the fanout {array_fanout} of Array {self.name} "
+                        f"along {s.name}"
+                    )
+
+        # Nodes inside an array are flattened to fit into a hierarchical
+        # model in order to map.
+        # However, we will keep information about how these nodes are
+        # arranged for modeling.
         for node in self.nodes:
             try:
                 if isinstance(node, Branch):
@@ -341,15 +368,23 @@ class Array(Branch, Spatialable):
                     if isinstance(node, Spatialable):
                         fanout *= node.get_fanout()
                         node = deepcopy(node)
-                        node._physical_spatial = node.spatial
+                        node._physical_spatial = [
+                            _PhysicalSpatial(
+                                name=s.name,
+                                fanout=s.fanout,
+                                stride=self.get_fanout_along(s.name) / s.fanout,
+                            )
+                            for s in node.spatial
+                        ]
                         node.spatial = EvalableList()
                     nodes.append(node)
                 else:
                     raise RuntimeError(f"unhandled structure type {node}")
             except EvaluationError as e:
-                e.add_field(node)
+                e.add_field(getattr(node, "name", node))
                 raise e
 
+        nodes = FlattenedArch(nodes)
         if return_fanout:
             return nodes, fanout
         return nodes
@@ -406,7 +441,7 @@ class Array(Branch, Spatialable):
         for parent_name, child_name in edges:
             graph.add_edge(pydot.Edge(parent_name, child_name))
 
-        return _SVGJupyterRender(graph.create_svg(prog="dot").decode("utf-8"))
+        return _SVGJupyterRender(_render_svg(graph))
 
     def _repr_svg_(self) -> str:
         return self.render()
@@ -418,7 +453,7 @@ class Hierarchical(Branch):
         compute_node: str,
         fanout: int = 1,
         return_fanout: bool = False,
-    ):
+    ) -> FlattenedArch:
         from accelforge.frontend.arch.components import Compute
 
         nodes = []
@@ -463,9 +498,10 @@ class Hierarchical(Branch):
                 else:
                     raise TypeError(f"Can't flatten {node}")
             except EvaluationError as e:
-                e.add_field(node)
+                e.add_field(getattr(node, "name", node))
                 raise e
 
+        nodes = FlattenedArch(nodes)
         if return_fanout:
             return nodes, fanout
         return nodes
@@ -533,7 +569,7 @@ class Hierarchical(Branch):
         for parent_name, child_name, style in edges:
             graph.add_edge(pydot.Edge(parent_name, child_name, style=style))
 
-        return _SVGJupyterRender(graph.create_svg(prog="dot").decode("utf-8"))
+        return _SVGJupyterRender(_render_svg(graph))
 
     def _repr_svg_(self) -> str:
         return self.render()

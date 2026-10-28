@@ -5,6 +5,7 @@ import itertools
 from enum import Enum
 
 import accelforge.frontend.arch as arch
+from accelforge.frontend.arch._flattened_arch import FlattenedArch
 from accelforge.util._frozenset import oset
 from accelforge.frontend.mapping import (
     MappingNode,
@@ -12,12 +13,14 @@ from accelforge.frontend.mapping import (
     Temporal,
     Spatial,
     TensorHolder,
+    Loop,
 )
 from accelforge.frontend.workload import (
     Einsum,
     RankVariable,
     Workload,
 )
+from accelforge.util.indent import print
 
 # =================================================================================================
 # Insert loops
@@ -38,7 +41,7 @@ def insert_temporal_loops(
     ranks_with_tile_pattern: set,
     workload: Workload,
     _can_lower_outermost_memory: bool,
-    flattened_arch: list[arch.Leaf],
+    flattened_arch: FlattenedArch,
     max_fused_loops: int,
     fanouts: dict[str, int],
     fusable_tensors: set[TensorName],
@@ -55,22 +58,62 @@ def insert_temporal_loops(
     # outermost memory are together at the beginning of the split mapping. After that,
     # each entries in the split mapping has a single TensorHolder.
     split_mapping: list[list[TensorHolder]] = []
+    inserted = oset()  # for tracking which element of `mapping` is handled
+
+    # The first group is for persistent tensors
+    storage_nodes_above_any_loop = []
     for m in mapping:
-        split_mapping.append([m])
-        if len(split_mapping) > 1 and m.component == first_memory.name:
-            split_mapping[-2].extend(split_mapping.pop(-1))
-    for i, s in enumerate[list[TensorHolder | Spatial]](split_mapping):
-        for m in s:
-            if i > 0 and m.component == first_memory.name:
-                raise ValueError(
-                    "First memory isn't at the top of the hierarchy. This isn't known"
-                    "to be invalid, but the code may not handle it."
-                )
-            elif i == 0 and isinstance(m, Spatial):
-                raise ValueError(
-                    "Found Spatial node before any TensorHolder. This isn't known to "
-                    "be invalid, but the code may not handle it."
-                )
+        if id(m) in inserted:
+            continue
+        if m.persistent:
+            storage_nodes_above_any_loop.append(m)
+            inserted.add(id(m))
+
+    # TODO: we have a misnomer: what we call `first_memory` in code is the one that
+    # `_can_lower_outermost_memory` refers to.
+    if not _can_lower_outermost_memory:
+        for m in mapping:
+            if id(m) in inserted:
+                continue
+            if m.component == first_memory.name:
+                storage_nodes_above_any_loop.append(m)
+                inserted.add(id(m))
+    split_mapping.append(storage_nodes_above_any_loop)
+
+    # All other storage nodes may have loops between them, unless its a copy op in which
+    # case we put back-to-back storage nodes for the same component together (so we
+    # don't have both a tensor and a partition of the tensor living in the same memory
+    # at one time).
+    is_copy_op = einsum.is_copy_operation
+    prev_component = None
+    for m in mapping:
+        if id(m) in inserted:
+            continue
+        if is_copy_op and prev_component == m.component:
+            split_mapping[-1].append(m)
+        else:
+            split_mapping.append([m])
+        prev_component = m.component
+
+    for s in split_mapping:
+        # Within each split mapping group, sort by arch levels.
+        # This can help create places to put spatial loops
+        s.sort(key=lambda tensor_holder: flattened_arch.index(tensor_holder.component))
+
+    if sum(map(len, split_mapping)) != len(mapping):
+        raise RuntimeError("BUG: number of storage nodes post-split != original")
+
+    for i in range(len(split_mapping) - 1):
+        for j in range(i + 1, len(split_mapping)):
+            for m_i in split_mapping[i]:
+                for m_j in split_mapping[j]:
+                    if mapping.index(m_i) > mapping.index(m_j):
+                        raise RuntimeError(
+                            f"BUG: node {m_i.compact_str()} and "
+                            f"{m_j.compact_str()} inverted post-splitting\n"
+                            f"Original mapping: {[m.compact_str() for m in mapping]}\n"
+                            f"Split mapping: {[[m.compact_str() for m in s] for s in split_mapping]}\n"
+                        )
 
     # These Einsum properties are recalculated since Einsum is mutable
     # We're pre-computing and reusing for efficiency
@@ -90,25 +133,14 @@ def insert_temporal_loops(
 
     def _get_next_storages(i: int, toll_allowed: bool = False) -> list[TensorHolder]:
         for j in range(i + 1, len(split_mapping)):
-            assert len(split_mapping[j]) <= 1
+            assert (
+                len(split_mapping[j]) <= 1 or is_copy_op
+            ), f"Mapping: {[m.compact_str() for m in mapping]}"
             # We don't add loops before tolls since they don't reuse things
             if isinstance(split_mapping[j][0], Toll) and not toll_allowed:
                 continue
             return split_mapping[j]
         return []
-
-    # If we want to lower the first storage node beneath loops, we put an empty list at
-    # the beginning of the split mapping & put loops between it and the first storage
-    # node. Do this if we can lower the outermost memory OR if the first storage node
-    # does not belong to the outermost memory (i.e., we completely bypass the outermost
-    # memory).
-    outermost_storage_name = None
-    for s in split_mapping:
-        if s and isinstance(s[0], TensorHolder):
-            outermost_storage_name = s[0].component
-            break
-    if _can_lower_outermost_memory or outermost_storage_name != first_memory.name:
-        split_mapping.insert(0, [])
 
     for i, prev_storages in enumerate(split_mapping):
         # =============================================================================
@@ -144,15 +176,26 @@ def insert_temporal_loops(
             cur_fanout.add(1)
         if len(next_fanout) == 0:  # Happens if we're inserting below all storage nodes
             next_fanout.add(float("inf"))
-        # Either it's main memory or we have one entry in the list, so there should only
-        # be one
-        assert len(cur_fanout) == 1
-        assert len(next_fanout) == 1
-        cur_fanout = next(iter(cur_fanout))
-        next_fanout = next(iter(next_fanout))
+
+        # These are used to check if fanouts increased and therefore spatial loops
+        # may be placed, so we use the maximum.
+        assert len(cur_fanout) > 0
+        assert len(next_fanout) > 0
+        cur_fanout = max(cur_fanout)
+        next_fanout = max(next_fanout)
 
         # Can't have loops above persistent tensor holders
         if next_persistent:
+            rank_variables &= oset()
+
+        # Can't have both a tensor and a copied partition of the tensor living in the
+        # same memory at one time
+        if is_copy_op and any(
+            s.component == s2.component
+            for s in prev_storages
+            for group in split_mapping[i + 1 :]
+            for s2 in group
+        ):
             rank_variables &= oset()
 
         # No recomputation: If we haven't seen a tensor yet, must only iterate over
@@ -310,22 +353,22 @@ def insert_temporal_loops(
 def insert_spatial_loops(
     mapping: list[MappingNode],
     einsum: Einsum,
-    flattened_arch: list[arch.Memory],
+    flattened_arch: FlattenedArch,
     intermediate_tensors: set[TensorName],
 ):
     nodes_with_fanout = [n for n in flattened_arch if n.get_fanout() > 1]
-    arch_node_names = [n.name for n in flattened_arch]
     tensor2fully_relevant_rank_vars = einsum.tensor2directly_indexing_rank_variables
+    simple_rank_variables = einsum._simple_rank_variables
 
     for node in nodes_with_fanout:
         # Insert spatials below the lowest storage node whose component is
-        # above the fanout in the arch, and below any temporal loops in the
+        # above the fanout in the arch, and below any loops already in the
         # same block.
         insertion_point = _idx_below_lowest_tensor_holder_with_component_above_fanout(
-            node, mapping, arch_node_names
+            node, mapping, flattened_arch
         )
         while insertion_point < len(mapping) and isinstance(
-            mapping[insertion_point], Temporal
+            mapping[insertion_point], Loop
         ):
             insertion_point += 1
 
@@ -345,10 +388,8 @@ def insert_spatial_loops(
                     component_object=node,
                     component=node.name,
                 )
-                if insertion_point == len(mapping):
-                    mapping.append(s)
-                else:
-                    mapping.insert(insertion_point, s)
+                mapping.insert(insertion_point, s)
+                insertion_point += 1
 
 
 def _tensors_seen_above_point(idx, mapping):
@@ -362,18 +403,49 @@ def _tensors_seen_above_point(idx, mapping):
 
 
 def _idx_below_lowest_tensor_holder_with_component_above_fanout(
-    fanout_node, mapping, arch_node_names
+    fanout_node, mapping, flattened_arch: FlattenedArch
 ):
     """Return the index right after the lowest TensorHolder whose component
     is above the fanout in the arch. If none found, returns len(mapping)."""
-    fanout_arch_idx = arch_node_names.index(fanout_node.name)
-    result = len(mapping)
+    fanout_arch_idx = flattened_arch.index(fanout_node.name)
+    result = 0
     for i in range(len(mapping)):
         if not isinstance(mapping[i], TensorHolder):
             continue
-        if arch_node_names.index(mapping[i].component) < fanout_arch_idx:
+        if flattened_arch.index(mapping[i].component) < fanout_arch_idx:
             result = i + 1
     return result
+
+
+def label_imperfect_tile_shapes(mapping, einsum: Einsum, job):
+    allow_all = job.allow_imperfect_all
+    imperfect_spatial = allow_all or job.explore_imperfect_spatial_loops
+    imperfect_temporal = allow_all or job.explore_imperfect_temporal_loops
+    simple_ranks = einsum._simple_rank_variables
+
+    rv2nodes = {}
+    for node in mapping:
+        if isinstance(node, Loop) and node.rank_variable in simple_ranks:
+            rv2nodes.setdefault(node.rank_variable, []).append(node)
+
+    for _, nodes in rv2nodes.items():
+        for i, node in enumerate(nodes):
+            # (A) We can get full expressiveness by unlocking options for the PREVIOUS
+            # loop, (B) which is also much faster to search. However, if we're the
+            # outermost loop for this rank variable, then unlock options for this loop.
+
+            # (A) reasoning: Loop bound = ceil(outer size / this size). Imperfect can
+            # relax options, so we choose outer size.
+            #
+            # (B) reasoning: For spatial loops, we know the fanout once we pick outer
+            # size AND inner size. We enumerate inner to outer, so this effectively
+            # defers imperfect factorization until we know the exact fanout, and can
+            # immediately use it to prune too-large fanouts.
+            target = max(i - 1, 0)
+            if isinstance(node, Spatial) and imperfect_spatial:
+                nodes[target]._may_cause_imperfect = True
+            if isinstance(node, Temporal) and imperfect_temporal:
+                nodes[target]._may_cause_imperfect = True
 
 
 def canonical_loop_orders(

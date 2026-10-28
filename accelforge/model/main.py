@@ -1,3 +1,4 @@
+from collections import defaultdict
 from copy import copy, deepcopy
 from uuid import uuid4
 
@@ -6,7 +7,7 @@ from accelforge._accelerated_imports import pandas as pd
 from accelforge.frontend import arch
 from accelforge.frontend.arch import Memory
 from accelforge.frontend.mapping.mapping import MappingNodeWithChildren
-from accelforge.frontend.renames import EinsumName, TensorName
+from accelforge.frontend.renames import EinsumName
 from accelforge.frontend.spec import Mapping, Spec
 from accelforge.util._frozenset import oset
 from accelforge.frontend.mapping import (
@@ -16,8 +17,10 @@ from accelforge.frontend.mapping import (
     Nested,
     NodeList,
     TensorHolder,
+    Loop,
 )
 from accelforge.frontend.workload import Workload
+from accelforge.frontend._workload_isl._symbolic import get_rank_variable_bounds
 from accelforge.frontend._workload_isl._symbolic import (
     get_stride_and_halo,
     get_rank_variable_relevancy,
@@ -25,7 +28,15 @@ from accelforge.frontend._workload_isl._symbolic import (
 from accelforge.mapper.FFM._make_pmappings.make_pmappings_from_templates.symbol_relations import (
     get_initial_delta_choices,
 )
+from accelforge.mapper.FFM._make_pmappings.make_pmapping_templates.make_loops import (
+    label_imperfect_tile_shapes,
+)
 from accelforge.mapper.FFM._pareto_df.df_convention import col_used_in_joining
+
+
+class InvalidMappingError(Exception):
+    def __init__(self, *args):
+        super().__init__(*args)
 
 
 def evaluate_mapping(
@@ -50,20 +61,40 @@ def evaluate_mapping(
         specification for that particular Einsum. If provided, then these will be used
         instead of re-parsing the specification.
     """
+    from accelforge.mapper.FFM._join_pmappings.join_pmappings import (
+        clean_compress_and_join_pmappings,
+    )
+
+    return clean_compress_and_join_pmappings(
+        pmappings=_model_pmappings(spec, flattened_arches, evaluated_specs),
+        metrics=spec.model.metrics,
+        print_progress=False,
+        for_model=True,
+    )
+
+
+def _model_pmappings(
+    spec: Spec,
+    flattened_arches: dict[(EinsumName, str), list[arch.Leaf]] | None = None,
+    evaluated_specs: dict[EinsumName, Spec] | None = None,
+):
+    """
+    Run the model on each pmapping, returning ready-to-join per-Einsum pmappings.
+    """
     from accelforge.mapper.FFM._join_pmappings.compatibility import Compatibility
     from accelforge.mapper.FFM._join_pmappings.pmapping_dataframe import (
         PmappingDataframe,
     )
     from accelforge.mapper.FFM._join_pmappings.pmapping_group import PmappingGroup
-    from accelforge.mapper.FFM._join_pmappings.join_pmappings import (
-        clean_compress_and_join_pmappings,
-    )
     from accelforge.mapper.FFM.pmappings import MultiEinsumPmappings
     from accelforge.mapper.FFM._make_pmappings.make_pmappings import (
         get_rank_variable_bounds_for_all_einsums,
     )
     from accelforge.model.run_model import (
         run_model,
+    )
+    from accelforge.mapper.FFM._make_pmappings.make_pmapping_templates.make_pmapping_templates import (
+        infer_default_binding,
     )
     from accelforge.mapper.FFM._make_pmappings.make_pmappings_from_templates.make_tile_shapes import (
         _calculate_iterations_and_rank_columns,
@@ -82,6 +113,7 @@ def evaluate_mapping(
         resource_usage_tolerance=0,  # spec.model.resource_usage_tolerance,
         objective_tolerance=0,  # spec.model.objective_tolerance,
         workload_n_einsums=len(spec.workload.einsum_names),
+        allow_imperfect_all=True,
     )
 
     einsum2pmappings = {}
@@ -89,16 +121,18 @@ def evaluate_mapping(
     einsum2jobs = {}
     s = (
         "Spec must not be evaluated before evaluating a mapping. Was "
-        "this spec returned by spec.calculate_component_area_energy_latency_leak()?"
+        "this spec returned by spec.calculate_component_costs()?"
     )
 
-    needs_reservations = not bool(spec.mapping.get_nodes_of_type(Reservation))
+    # needs_reservations = not bool(spec.mapping.get_nodes_of_type(Reservation))
 
-    fusable_tensors = spec.workload.tensor_names_used_in_multiple_einsums
+    fusable_tensors = spec.workload.shared_tensor_names()
     stride_and_halo = get_stride_and_halo(spec.workload)
 
     assert not getattr(spec, "_evaluated", False), s
     for pmapping in _split_mapping_to_pmappings(spec.mapping, spec.workload):
+        _assert_valid_pmapping(pmapping, spec.workload)
+
         einsum_name = pmapping.nodes[-1].einsum
         compute_name = pmapping.nodes[-1].component
         pmapping_id = uuid4()
@@ -109,7 +143,7 @@ def evaluate_mapping(
             cur_spec = evaluated_specs[einsum_name]
 
         else:
-            cur_spec = spec.calculate_component_area_energy_latency_leak(
+            cur_spec = spec.calculate_component_costs(
                 einsum_name=einsum_name,
                 area=False,
             )
@@ -123,11 +157,11 @@ def evaluate_mapping(
         # spec, not cur_spec, becuase cur_spec only has one einsum and the delta choices
         # depend on >1 Einsums
         job.initial_delta_choices = get_initial_delta_choices(
-            job.einsum_name, spec.workload
+            job.einsum_name, spec.workload, stride_and_halo
         )
-        pmapping.split_reservations()
-        pmapping.split_loop_with_multiple_rank_variables(job.einsum_name)
-        pmapping.split_tensor_holders_with_multiple_tensors()
+        pmapping._split_reservations()
+        pmapping._split_loop_with_multiple_rank_variables(job.einsum_name)
+        pmapping._split_tensor_holders_with_multiple_tensors()
         _add_backing_to_tensor_holders(pmapping)
 
         job.mapping = pmapping
@@ -139,7 +173,19 @@ def evaluate_mapping(
                 job.einsum_name
             ].tensor_names
         }
-        pmapping.clear_irrelevant_reservations(oset(job.tensor_to_relevancy))
+        pmapping._clear_irrelevant_reservations(oset(job.tensor_to_relevancy))
+        pmapping._clear_reservations()
+        pmapping._clear_bindings()
+
+        # component_objects are can become stale from mapper to here
+        # if calling just model, they are unset
+        pmapping._update_component_objects(cur_spec)
+
+        label_imperfect_tile_shapes(
+            pmapping.nodes,
+            job.spec_one_einsum.workload.einsums[job.einsum_name],
+            job,
+        )
 
         einsum2jobs[job.einsum_name] = job
 
@@ -147,13 +193,15 @@ def evaluate_mapping(
         job.memories_track_all = [
             m.name for m in flattened_arch if isinstance(m, Memory)
         ]
+        job.components_track_latency = oset(m.name for m in flattened_arch)
+        job.ignored_resources = oset()
 
         job.fusable_tensors = fusable_tensors & oset(job.tensor_to_relevancy)
         einsum = cur_spec.workload.einsums[job.einsum_name]
 
-        _, df, _, _, tensor2mapping, _ = run_model(
-            job, add_reservations=needs_reservations
-        )
+        infer_default_binding(job.mapping, job)
+
+        _, df, _, _, tensor2mapping, _ = run_model(job, add_reservations=True)
 
         # Calculate iteration counts and rank columns
         _clean_energy_columns(df, job.metrics)
@@ -203,20 +251,15 @@ def evaluate_mapping(
         if einsum_name in einsum2pmappings
     }
 
-    return clean_compress_and_join_pmappings(
-        pmappings=MultiEinsumPmappings(
-            spec=spec,
-            einsum2pmappings=einsum2pmappings,
-            pmapping_objects=pmapping_objects,
-            einsum2jobs=einsum2jobs,
-            can_combine_multiple_runs=False,
-            einsums_with_pmappings_generated=oset(spec.workload.einsum_names),
-            flattened_arches=flattened_arches,
-            evaluated_specs=evaluated_specs,
-        ),
-        metrics=spec.model.metrics,
-        print_progress=False,
-        for_model=True,
+    return MultiEinsumPmappings(
+        spec=spec,
+        einsum2pmappings=einsum2pmappings,
+        pmapping_objects=pmapping_objects,
+        einsum2jobs=einsum2jobs,
+        can_combine_multiple_runs=False,
+        einsums_with_pmappings_generated=oset(spec.workload.einsum_names),
+        flattened_arches=flattened_arches,
+        evaluated_specs=evaluated_specs,
     )
 
 
@@ -256,9 +299,52 @@ def _split_mapping_to_pmappings(mapping: Mapping, workload: Workload):
     instead of links to children.
     """
     for nodes in _split_mapping_worker(mapping):
-        mapping = Mapping(nodes=deepcopy(nodes))
-        _remove_storage_of_unrelevant_tensors(mapping, workload)
-        yield mapping
+        pmapping = Mapping(nodes=deepcopy(nodes))
+        pre_merged = mapping._pre_merged_pmappings.get(pmapping.nodes[-1].einsum)
+        if pre_merged is not None:
+            _drop_duplicated_nodes(pmapping, pre_merged)
+        _remove_storage_of_unrelevant_tensors(pmapping, workload)
+        yield pmapping
+
+
+def _drop_duplicated_nodes(pmapping: Mapping, pre_merged: Nested):
+    """
+    If merging added additional nodes to this pmapping from other pmappings, drop them
+    """
+    my_nodes, depth = defaultdict(set), 0
+    for node in pre_merged.nodes:
+        if isinstance(node, Loop):
+            depth += 1
+        elif isinstance(node, TensorHolder):
+            for tensor in node.tensors:
+                my_nodes[node.component, tensor].add(depth)
+        elif isinstance(node, Reservation):
+            for purpose in node.purposes:
+                my_nodes[node.resource, purpose].add(depth)
+
+    new_nodes, depth = [], 0
+    for node in pmapping.nodes:
+        if isinstance(node, Loop):
+            depth += 1
+        elif isinstance(node, TensorHolder):
+            node.tensors = [
+                t
+                for t in node.tensors
+                if depth in my_nodes.get((node.component, t), ())
+            ]
+            if not node.tensors:
+                continue
+        elif isinstance(node, Reservation):
+            node.purposes = [
+                p
+                for p in node.purposes
+                if (node.resource, p) not in my_nodes
+                or depth in my_nodes[node.resource, p]
+            ]
+            if not node.purposes:
+                continue
+        new_nodes.append(node)
+    pmapping.nodes = new_nodes
 
 
 def _remove_storage_of_unrelevant_tensors(pmapping: Mapping, workload: Workload):
@@ -280,3 +366,23 @@ def _remove_storage_of_unrelevant_tensors(pmapping: Mapping, workload: Workload)
             new_nodes.append(node)
 
     pmapping.nodes = new_nodes
+
+
+def _assert_valid_pmapping(pmapping: Mapping, workload: Workload):
+    """Assert that pmapping has loops with shape 1."""
+    einsum_name = pmapping.nodes[-1].einsum
+    rank_variables = {
+        rv
+        for rv, bound in get_rank_variable_bounds(workload, einsum_name).items()
+        if bound > 1
+    }
+    for node in pmapping.nodes:
+        if isinstance(node, Loop) and node.tile_shape == 1:
+            if isinstance(node.rank_variable, set):
+                rank_variables.difference_update(node.rank_variable)
+            else:
+                rank_variables.discard(node.rank_variable)
+    if len(rank_variables) > 0:
+        raise InvalidMappingError(
+            f"Missing loop with shape 1 for rank variables {rank_variables} in Einsum {einsum_name}"
+        )

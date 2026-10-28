@@ -8,6 +8,7 @@ from typing import Any, Callable, Iterable
 import sympy
 
 from accelforge.frontend.mapping import Nested, TilePattern
+from accelforge.frontend.mapper.metrics import Metrics
 from accelforge.frontend.mapping import Loop as MappingLoop
 from accelforge.mapper.FFM._join_pmappings.compatibility import (
     Compatibility,
@@ -15,6 +16,7 @@ from accelforge.mapper.FFM._join_pmappings.compatibility import (
     TensorReservation,
 )
 from accelforge.util import _fillna_and__numeric_cast, _numeric_cast
+from accelforge.util._mathfuncs import RESERVATION_PRECISION_TOLERANCE
 from accelforge.util._frozenset import fzs, oset
 
 from accelforge._accelerated_imports import pd
@@ -98,21 +100,39 @@ def get_reservation_or_parent(
     return_name_level_left: bool = False,
 ) -> str | tuple[str, int, bool] | None:
     reservations = l_reservations if left else r_reservations
-    if (reservations := reservations.get(name, None)) is not None:
-        while level >= -1:
-            if level in reservations:
-                if return_name_level_left:
-                    return name, level, left
-                return reservation2col(name, level, left)
-            # The parent of left nodes are right nodes, so if we don't find a
-            # left node immediately then we're back on the right nodes
-            reservations = r_reservations.get(name, oset())
-            left = False
-            level -= 1
+    # Previously we had the below here, but I think that's bugged because it would
+    # return None if we checked for left, it didn't exist on the left, and did exist on
+    # the right.
+    # if (levels := reservations.get(name, None)) is not None:
+
+    levels = reservations.get(name, oset())
+    while level >= -1:
+        if level in levels:
+            if return_name_level_left:
+                return name, level, left
+            return reservation2col(name, level, left)
+        # The parent of left nodes are right nodes, so if we don't find a
+        # left node immediately then we're back on the right nodes
+        levels = r_reservations.get(name, oset())
+        left = False
+        level -= 1
     return None
 
 
+def get_latency_or_below(
+    name: str, level: int, latencies: dict[str, oset]
+) -> str | None:
+    """Latency columns include all levels below them, so the value at a level with
+    no column is the value at the closest level below it."""
+    levels = [l for l in latencies.get(name, oset()) if l >= level]
+    if not levels:
+        return None
+    return complatency2col(name, min(levels))
+
+
 class PmappingDataframe:
+    use_simplified_objectives: Metrics | None = None
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -126,6 +146,7 @@ class PmappingDataframe:
         max_right_to_left: bool = False,
         next_shared_loop_index: int = None,
         excess_resource_tolerance: float = 0,
+        use_simplified_objectives: Metrics | None = None,
     ):
         self._data: pd.DataFrame = reduce_precision(data)
         self._prev_free_to_loop_index = None
@@ -133,6 +154,8 @@ class PmappingDataframe:
         self.n_valid_pmappings: float = n_valid_pmappings
         self.drop_valid_reservations: bool = drop_valid_reservations
         self.excess_resource_tolerance: float = excess_resource_tolerance
+        self.use_simplified_objectives = use_simplified_objectives
+        self.ignored_resources = ignored_resources
 
         if next_shared_loop_index is not None:
             assert (
@@ -159,8 +182,6 @@ class PmappingDataframe:
         if check_above_subset_below:
             self.check_above_subset_below()
 
-        self.ignored_resources = ignored_resources
-
         assert len(self.data.columns) == len(
             oset(self.data.columns)
         ), f"Duplicate columns: {self.data.columns}"
@@ -173,7 +194,9 @@ class PmappingDataframe:
     @error_check_wrapper
     def fill_reservation_cols(self, columns: set | str):
         l_reservations, r_reservations = self._make_reservations()
+        latencies = self._make_latencies()
         targets = []
+        latency_targets = []
         if columns == "auto":
             for left, reservations_dict in [
                 (True, l_reservations),
@@ -187,20 +210,38 @@ class PmappingDataframe:
                         if above is not None:
                             below = reservation2col(resource, r, left=left)
                             targets.append((r, above, below))
+            for component, levels in latencies.items():
+                for r in sorted(levels):
+                    source = get_latency_or_below(component, r + 1, latencies)
+                    if source is not None:
+                        latency_targets.append(
+                            (r, source, complatency2col(component, r))
+                        )
         else:
             for below in columns:
-                if (name_nloops := col2reservation(below)) is None:
+                if (name_nloops := col2reservation(below)) is not None:
+                    name, nloops = name_nloops.name, name_nloops.nloops
+                    above = get_reservation_or_parent(
+                        name, nloops - 1, l_reservations, r_reservations
+                    )
+                    if above is not None:
+                        targets.append((nloops, above, below))
+                elif (name_nloops := col2complatency(below)) is not None:
+                    name, nloops = name_nloops.name, name_nloops.nloops
+                    source = get_latency_or_below(name, nloops + 1, latencies)
+                    if source is not None:
+                        latency_targets.append((nloops, source, below))
+                elif col2commlatency(below) is not None:
+                    pass
+                else:
                     raise ValueError(f"{below} is not a valid reservation column")
-                name, nloops = name_nloops.name, name_nloops.nloops
-                above = get_reservation_or_parent(
-                    name, nloops - 1, l_reservations, r_reservations
-                )
-                if above is not None:
-                    targets.append((nloops, above, below))
 
-        # Sort so we go from top to bottom. Needed in case we have to max 0->1
-        # then 1->2
-        for _, above, below in sorted(targets, key=lambda x: x[0]):
+        # Sort so maxes propagate: reservations from top to bottom (e.g. 0->1 then
+        # 1->2), latencies from bottom to top.
+        ordered = sorted(targets, key=lambda x: x[0]) + sorted(
+            latency_targets, key=lambda x: x[0], reverse=True
+        )
+        for _, above, below in ordered:
             assert (
                 above in self.data.columns
             ), f"Missing column {above}. Have columns:\n\t" + "\n\t".join(
@@ -230,9 +271,9 @@ class PmappingDataframe:
     @error_check_wrapper
     def _make_reservations(self) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
         """
-        Create a dictionary of reservations for each resource.
-        The dictionary keys are the resource names and the values are lists
-        of column names for each loop index.
+        Create a dictionary of reservations for each resource. The dictionary keys are
+        the resource names and the values are lists of above_loop_index values for that
+        resource.
         """
         l_reservations, r_reservations = {}, {}
         for c in self.data.columns:
@@ -243,6 +284,25 @@ class PmappingDataframe:
 
         return l_reservations, r_reservations
 
+    def _make_latencies(self) -> dict[str, oset]:
+        """
+        Keys component name, values are sets of column indices for that component.
+        """
+        latencies = {}
+        for c in self.data.columns:
+            if (key := col2complatency(c)) is not None:
+                latencies.setdefault(key.name, oset()).add(key.nloops)
+                assert key.nloops >= -1
+        return latencies
+
+    def _make_commlatencies(self) -> dict[str, oset]:
+        """Fused loop levels with a "descent" or "ascent" column."""
+        levels = {"descent": oset(), "ascent": oset()}
+        for c in self.data.columns:
+            if (key := col2commlatency(c)) is not None:
+                levels[key.direction].add(key.nloops)
+        return levels
+
     def clear_fused_loop_symbols(self):
         dropcols = [c for c in self.data.columns if is_fused_loop_col(c)]
         if not dropcols:
@@ -251,12 +311,15 @@ class PmappingDataframe:
         self.make_pareto()
 
     @error_check_wrapper
-    def free_to_loop_index(self, loop_index: int) -> bool:
+    def free_to_loop_index(
+        self, loop_index: int, free_reservations: bool = True
+    ) -> bool:
         """
+        Reservations follow:
            A  B
             / | --- 0
            C  D
-            / | --- 1  < Shared Loop Index
+            / | --- 1  <- Shared Loop Index
            E  F
             / | --- 2
            G  H
@@ -264,24 +327,46 @@ class PmappingDataframe:
            A  B
             / | --- 0
            C  D
-              | --- 1  < Shared Loop Index
+              | --- 1  <- Shared Loop Index
           max(E,G,H)
         We skip incorporating E into the max because its reservations are
         already incorporated into F and G.
+
+        For latencies, we do:
+            A
+            | --- 0
+            B
+            | --- 1  <- Shared Loop Index
+            C
+            | --- 2
+            D
+        ->
+            A
+            | --- 0
+            B
+            | --- 1  <- Shared Loop Index
+
+        Skip incorporating D,C into B because levels already include sub-levels. Also we
+        do:
+           Total<SEP>latency = max(Total<SEP>latency, C)
+
+        since C must complete before exiting this fused loop block.
         """
         if loop_index == self._prev_free_to_loop_index:
             return False
         self._prev_free_to_loop_index = loop_index
 
         drop_columns = []
-        l_reservations, r_reservations = self._make_reservations()
+        l_reservations, r_reservations = (
+            self._make_reservations() if free_reservations else ({}, {})
+        )
         for resource in oset(l_reservations) | oset(r_reservations):
             max_columns = []
             cur_l_reservations = l_reservations.get(resource, oset())
             cur_r_reservations = r_reservations.get(resource, oset())
-            left_big_enough = [l for l in cur_l_reservations if l >= loop_index + 1]
+            left_big_enough = [l for l in cur_l_reservations if l > loop_index]
             right_big_enough = [
-                r for r in cur_r_reservations if r >= loop_index + 2
+                r for r in cur_r_reservations if r > loop_index + 1
             ]  # + 1 is target
 
             if len(right_big_enough) > 1:  # All ones above the last are subsets
@@ -307,9 +392,64 @@ class PmappingDataframe:
                 for c in max_columns:
                     max_to_col(self.data, target, c)
                 drop_columns += [m for m in max_columns if m != target]
-        self.data.drop(columns=drop_columns, inplace=True)
+
+        for component, levels in self._make_latencies().items():
+            done = [l for l in levels if l > loop_index]
+            if not done:
+                continue
+            # Latency can only be shared between Einsums whose reservations live at the
+            # same time (a transfer needs its space to already be reserved), so levels
+            # whose reservations future Einsums would max rather than sum are finished.
+            # Columns include all levels below, so the shallowest done column has all of
+            # the finished latency
+            assert "Total<SEP>latency" in self.data
+            max_to_col(
+                self.data, "Total<SEP>latency", complatency2col(component, min(done))
+            )
+            drop_columns += [complatency2col(component, l) for l in done]
+
+        # Wind-up/down times serialize with the freed window's busy time, so add them
+        # after the maxes above.
+        for direction, levels in self._make_commlatencies().items():
+            for level in levels:
+                if level > loop_index:
+                    col = commlatency2col(direction, level)
+                    self.data["Total<SEP>latency"] += self.data[col]
+                    drop_columns.append(col)
+
+        self._data = self.data.drop(columns=drop_columns)
 
         return len(drop_columns) != 0
+
+    def _clean_objectives(self, metrics: Metrics, finished: bool):
+        # Next shared = -1 -> no shared loops in the future
+        if finished:
+            self.limit_capacity(next_shared_loop_index=-1, finished=True)
+        # We do an additional bump to -2 because globally-shared tensors (persistent
+        # tensors) are reserved at above_loop_index -1
+        self.free_to_loop_index(-2, free_reservations=finished)
+
+        if metrics & Metrics.ENERGY_DELAY_PRODUCT:
+            self.data["Total<SEP>energy_delay_product"] = (
+                self.data["Total<SEP>energy"].astype(float)
+                * self.data["Total<SEP>latency"]
+            ).to_numpy()
+
+        objectives = {f"Total<SEP>{metric.name.lower()}" for metric in metrics}
+        self.data.drop(
+            columns=[
+                c
+                for c in self.data
+                if (is_objective_col(c) and c not in objectives)
+                or (finished and is_fused_loop_col(c)) # Finished -> no fused loops
+            ],
+            inplace=True,
+        )
+
+    def finish(self, metrics: Metrics):
+        self._clean_objectives(metrics, finished=True)
+        self.use_simplified_objectives = None
+        self.make_pareto()
 
     @error_check_wrapper
     def shift_bottom_reservation_left(self, bottom_loop_index: int):
@@ -382,6 +522,7 @@ class PmappingDataframe:
         compatibility_right: Compatibility,
         compatibility_joined: Compatibility,
         ignored_resources: set[str],
+        do_not_free: set[str] = fzs(),
         _pmapping_row_filter_function: Callable[[pd.Series], bool] | None = None,
         _force_allow_invalid_only_for_runtime_test: bool = False,
         _is_invalid: bool = False,
@@ -421,7 +562,9 @@ class PmappingDataframe:
 
         def check_match(la: Loop, lb: Loop, param: str):
             a, b = getattr(la.tile_pattern, param), getattr(lb.tile_pattern, param)
-            if isinstance(a, str) or isinstance(b, str):
+            if isinstance(a, str) and isinstance(b, str):
+                if a in left_match and b in left_match:
+                    return
                 left_match.append(a)
                 right_match.append(b)
             elif a != b:
@@ -434,6 +577,10 @@ class PmappingDataframe:
                 for la, lb in zip(ta.loops, tb.loops):
                     check_match(la, lb, "initial_tile_shape")
                     check_match(la, lb, "tile_shape")
+                for la, lb in zip(ta.physical_spatial_loops, tb.physical_spatial_loops):
+                    check_match(la, lb, "initial_tile_shape")
+                    check_match(la, lb, "tile_shape")
+                    check_match(la, lb, "calculated_n_iterations")
 
             for la, lb in zip(compatibility_left.loops, compatibility_right.loops):
                 check_match(la, lb, "calculated_n_iterations")
@@ -445,6 +592,8 @@ class PmappingDataframe:
         assert not right_df_l_reservations, f"{right_df_l_reservations} is not None"
 
         l_reservations, r_reservations = self._make_reservations()
+        l_latencies = self._make_latencies()
+        r_latencies = right._make_latencies()
 
         for resource, reservations in r_reservations.items():
             n_reservations = max(reservations, default=-1)
@@ -497,6 +646,12 @@ class PmappingDataframe:
         n_total_pmappings *= scale_by
         n_valid_pmappings *= scale_by
 
+        def from_right(c: str) -> str:
+            # If a column is in both DFs, do the appropriate rename to grab the one from
+            # the right side
+            right_merge = c + "_RIGHT_MERGE"
+            return right_merge if right_merge in df else c
+
         # Make sure everything is done in increasing loop order so we don't have
         # read-after-write hazards
         for nloops in range(max_nloops, min_nloops - 1, -1):
@@ -534,14 +689,9 @@ class PmappingDataframe:
                     )
                 ) is None:
                     continue
-                right_merge_source = source + "_RIGHT_MERGE"
                 target = reservation2col(resource, nloops, left=True)
                 if source is not None:
-                    add_to_col(
-                        df,
-                        target,
-                        right_merge_source if right_merge_source in df else source,
-                    )
+                    add_to_col(df, target, from_right(source))
             # For LEFT tree, RIGHT reservations: Add the same-level reservation from the
             # right tree. This will double-count reservations that are in both branches,
             # so we remove them later.
@@ -555,20 +705,51 @@ class PmappingDataframe:
                     )
                 ) is None:
                     continue
-                right_merge_source = source + "_RIGHT_MERGE"
                 target = reservation2col(resource, nloops)
                 if source is not None:
-                    add_to_col(
-                        df,
-                        target,
-                        right_merge_source if right_merge_source in df else source,
-                    )
+                    add_to_col(df, target, from_right(source))
 
-        # For everything else: Simple add
+        # PIPELINE: The following would need some maxes
+
+        # Component latencies are always summed. Some extra logic needed in case there's
+        # missing columns that make us need to grab from a column below. A side with no
+        # column at or below a level has no latency there and contributes nothing.
+        for component in oset(l_latencies) | oset(r_latencies):
+            l_levels = l_latencies.get(component, oset())
+            r_levels = r_latencies.get(component, oset())
+            # max_nloops/min_nloops only cover reservation levels, so iterate the
+            # latency levels directly (ascending so the deeper columns we read are
+            # still unmodified).
+            for nloops in sorted(l_levels | r_levels):
+                target = complatency2col(component, nloops)
+                # In both: Simple add
+                if nloops in l_levels and nloops in r_levels:
+                    add_to_col(df, target, from_right(target))
+
+                # In left only: Add the closest-below one from the right
+                elif nloops in l_levels:
+                    source = get_latency_or_below(component, nloops, r_latencies)
+                    if source is not None:
+                        add_to_col(df, target, from_right(source))
+
+                # In right only: Same thing
+                elif nloops in r_levels:
+                    source = get_latency_or_below(component, nloops, l_latencies)
+                    if source is not None:
+                        add_to_col(df, target, source)
+
+        # Most other things: Simple add. Descent/ascent wind-up latencies are maxed
+        # because they can be paid in parallel across all Einsums that are
+        # descending/ascending together.
         dropcols = [c for c in df.columns if c.endswith("_RIGHT_MERGE")]
         for source in dropcols:
             target = source[: -len("_RIGHT_MERGE")]
             if is_tensor_col(target):
+                continue
+            if col2complatency(target) is not None:
+                continue
+            if col2commlatency(target) is not None:
+                max_to_col(df, target, source)
                 continue
             if not col_used_in_pareto(target):
                 raise ValueError(f"{target} is not used in pareto")
@@ -576,6 +757,7 @@ class PmappingDataframe:
                 add_to_col(df, target, source)
 
         df = df.drop(columns=dropcols)
+
         result = PmappingDataframe(
             df,
             skip_pareto=True,
@@ -584,11 +766,14 @@ class PmappingDataframe:
             n_valid_pmappings=n_valid_pmappings,
             ignored_resources=self.ignored_resources,
             drop_valid_reservations=self.drop_valid_reservations,
+            use_simplified_objectives=self.use_simplified_objectives,
         )
         # Remove tensors that were allocated in both branches and got added
         # together.
         shared_to_free = [
-            s for s in shared_tensors if s.above_loop_index <= shared_loop_index
+            s
+            for s in shared_tensors
+            if s.above_loop_index <= shared_loop_index and s.name not in do_not_free
         ]
         reservations_of_live_tensor_not_in_right = [
             compatibility_joined.get_reservation_of_tensor(t)
@@ -600,11 +785,37 @@ class PmappingDataframe:
             for r in reservations_of_live_tensor_not_in_right
             if r.above_loop_index > shared_loop_index
         ]
+
+        # Assert duplicated aliased tensors have the same reservation sizes
+        shared_keys = {(s.resource_name, s.above_loop_index) for s in shared_to_free}
+        free = list(shared_to_free)
+        for d in duplicated_aliased_tensors:
+            key = (d.resource_name, d.above_loop_index)
+            if key in shared_keys:
+                for s in shared_to_free:
+                    if (s.resource_name, s.above_loop_index) == key:
+                        assert (
+                            result.data[tensor2col(s.name)]
+                            == result.data[tensor2col(d.name)]
+                        ).all(), (
+                            f"Duplicated tensors {s.name} and {d.name} in "
+                            f"{d.resource_name} have different reservation sizes"
+                        )
+                continue
+            free.append(d)
+
         result.adjust_reservations(
             alloc=live_to_alloc,
-            free=list(itertools.chain(shared_to_free, duplicated_aliased_tensors)),
+            free=free,
             ignored_resources=ignored_resources,
         )
+
+        dead_tensor_cols = [
+            c
+            for c in result.data.columns
+            if is_tensor_col(c) and col2nametensor(c) not in live_tensors
+        ]
+        result.data.drop(columns=dead_tensor_cols, inplace=True)
 
         if CHECK_CORRECTNESS:
             result.check_above_subset_below(live_tensors)
@@ -745,6 +956,7 @@ class PmappingDataframe:
             n_valid_pmappings=sum(p.n_valid_pmappings for p in paretos),
             ignored_resources=next(iter(paretos)).ignored_resources,
             drop_valid_reservations=next(iter(paretos)).drop_valid_reservations,
+            use_simplified_objectives=paretos[0].use_simplified_objectives,
         )
         return p
 
@@ -761,6 +973,7 @@ class PmappingDataframe:
             n_valid_pmappings=self.n_valid_pmappings,
             ignored_resources=self.ignored_resources,
             drop_valid_reservations=self.drop_valid_reservations,
+            use_simplified_objectives=self.use_simplified_objectives,
         )
         args.update(kwargs)
         return PmappingDataframe(**args)
@@ -771,6 +984,24 @@ class PmappingDataframe:
             skip_pareto=True,
             check_above_subset_below=False,
         )
+
+    def split_in_half(self) -> tuple["PmappingDataframe", "PmappingDataframe"]:
+        mid = len(self.data) // 2
+        half_total = self.n_total_pmappings / 2
+        half_valid = self.n_valid_pmappings / 2
+        first = self.update(
+            data=self.data.iloc[:mid].copy(),
+            skip_pareto=True,
+            n_total_pmappings=half_total,
+            n_valid_pmappings=half_valid,
+        )
+        second = self.update(
+            data=self.data.iloc[mid:].copy(),
+            skip_pareto=True,
+            n_total_pmappings=half_total,
+            n_valid_pmappings=half_valid,
+        )
+        return first, second
 
     def limit_capacity(
         self,
@@ -799,9 +1030,11 @@ class PmappingDataframe:
                     )
                     for col2 in self.data.columns:
                         print(f"{col2}: {list[Any](self.data[col2])}")
-                self._data = self.data[self.data[col] <= 1 + tolerance]
+                self._data = self.data[
+                    self.data[col] <= 1 + tolerance + RESERVATION_PRECISION_TOLERANCE
+                ]
                 if (
-                    l == 0
+                    l <= 0
                     and next_shared_loop_index == -1
                     # CAN'T DROP RESERVATIONS UNTIL WE'RE FINISHED JOINING. Persistent
                     # tensors may get saved later and would live at the same time as
@@ -830,9 +1063,11 @@ class PmappingDataframe:
                     )
                     for col2 in self.data.columns:
                         print(f"{col2}: {list[Any](self.data[col2])}")
-                self._data = self.data[self.data[col] <= 1 + tolerance]
+                self._data = self.data[
+                    self.data[col] <= 1 + tolerance + RESERVATION_PRECISION_TOLERANCE
+                ]
                 if (
-                    l == 0
+                    l <= 0
                     # CAN'T DROP RESERVATIONS UNTIL WE'RE FINISHED JOINING. Persistent
                     # tensors may get saved later.
                     and finished
@@ -845,9 +1080,13 @@ class PmappingDataframe:
 
         self._data = self.data.drop(columns=dropcols)
 
+    def _simplify_objectives_for_prune(self, metrics: Metrics) -> pd.DataFrame:
+        simplified = self.copy()
+        simplified._clean_objectives(metrics, finished=False)
+        return simplified.data.reset_index(drop=True)
+
     def make_pareto(
         self,
-        columns: list[str] = None,
         objective_tolerance: float = 0,
         resource_usage_tolerance: float = 0,
         absolute_resource_usage_tolerance: float = 0,
@@ -860,13 +1099,20 @@ class PmappingDataframe:
         if self.drop_valid_reservations:
             resource_usage_tolerance = objective_tolerance
 
+        if self.use_simplified_objectives is not None:
+            simplified = self._simplify_objectives_for_prune(
+                self.use_simplified_objectives
+            )
+        else:
+            simplified = self.data
         new_data = makepareto(
-            self.data,
-            columns,
+            simplified,
             resource_usage_tolerance=resource_usage_tolerance,
             absolute_resource_usage_tolerance=absolute_resource_usage_tolerance,
             objective_tolerance=objective_tolerance,
         )
+        if self.use_simplified_objectives is not None:
+            new_data = self.data.iloc[new_data.index]
         if inplace:
             self._data = new_data
             return self
@@ -1000,10 +1246,10 @@ class PmappingDataframe:
     def clear_irrelevant_columns(
         self, compatibility: Compatibility
     ) -> "PmappingDataframe":
-        return self.update(
-            data=compatibility.clear_unrelated_columns(self._data),
-            skip_pareto=True,
-        )
+        data = compatibility.clear_unrelated_columns(self._data)
+        if data is self._data:
+            return self
+        return self.update(data=data, skip_pareto=True)
 
 
 def row2pmappings(

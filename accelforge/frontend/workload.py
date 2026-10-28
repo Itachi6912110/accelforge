@@ -7,6 +7,7 @@ from itertools import product
 import itertools
 import logging
 import re
+from collections.abc import Iterable
 from typing import Annotated, Any, TypeAlias
 
 import pydot
@@ -20,7 +21,7 @@ from accelforge.util._basetypes import (
     EvalableModel,
     EvalsTo,
 )
-from accelforge.util._visualization import _pydot_graph
+from accelforge.util._visualization import _pydot_graph, _render_svg
 from accelforge.frontend.renames import (
     EinsumName,
     RankVariable,
@@ -33,7 +34,11 @@ from accelforge.frontend.renames import (
 )
 from accelforge.util.exceptions import EvaluationError
 from accelforge.util._eval_expressions import eval_expression
-from accelforge.util._setexpressions import InvertibleSet, eval_set_expression
+from accelforge.util._setexpressions import (
+    InvertibleSet,
+    eval_set_expression,
+    eval_set_expression_dict,
+)
 
 from accelforge.frontend.renames import (
     EinsumName,
@@ -124,7 +129,7 @@ class TensorAccess(EvalableModel):
     backing_storage_size_scale: float = 1.0
     """ If != 1, then the backing storage size will be scaled by this factor. """
 
-    bits_per_value: int | str | None = None
+    bits_per_value: EvalsTo[int | None] = None
     """ Bits per value for this tensor. """
 
     def model_post_init(self, __context__=None) -> None:
@@ -219,11 +224,19 @@ def _projection_factory(projection: dict | list):
         for i, x in enumerate(projection):
             if not isinstance(x, str):
                 raise TypeError(f"Element at index {i} must be a string, got {type(x)}")
+            if not x:
+                raise ValueError(f"Empty string in projection list at index {i}.")
             if not _ISL_REGEX.match(x):
                 raise ValueError(
                     f"Element '{x}' at index {i} is not a valid ISL identifier"
                     f"In a projection list, all elements must be valid ISL identifiers."
                     f"For expressions, use a dictionary projection."
+                )
+            if x[0].isupper():
+                raise ValueError(
+                    f"Rank variable '{x}' at index {i} in projection list must start "
+                    f"with a lowercase letter. Rank variables are lowercase; rank "
+                    f"names are uppercase. Did you mean to use a dictionary projection?"
                 )
         projection = ImpliedProjection({x.upper(): x for x in projection})
     elif not isinstance(projection, dict):
@@ -238,6 +251,14 @@ def _projection_factory(projection: dict | list):
             raise ValueError(
                 f"Invalid projection key: {key}. Must be a valid identifier. Check with "
                 f"the Python isidentifier() function."
+            )
+        if not key:
+            raise ValueError(f"Empty rank name in projection at index {i}.")
+        if key[0].islower():
+            raise ValueError(
+                f"Rank name '{key}' in projection must start with an uppercase letter. "
+                f"Rank names are uppercase (e.g., 'M'); rank variables are lowercase "
+                f"(e.g., 'm')."
             )
     return projection
 
@@ -361,12 +382,25 @@ def _parse_projection(proj_str: str) -> dict | list:
                 raise ValueError(
                     f"Invalid projection key: {k}. Must be a valid ISL identifier. {s}"
                 )
+            if k[0].islower():
+                raise ValueError(
+                    f"Rank name '{k}' must start with an uppercase letter. "
+                    f"Rank names are uppercase (e.g., 'M'); rank variables are  "
+                    f"lowercase(e.g., 'm'). {s}"
+                )
             if k in result:
                 raise ValueError(f"Duplicate rank entry: {k}. Must be unique. {s}")
             result[k] = v
         else:
             if not part:
                 raise ValueError(f"Empty projection entry. {s}")
+            if part[0].isupper():
+                raise ValueError(
+                    f"Rank variable '{part}' in shorthand projection must start with a "
+                    f"lowercase letter. Rank variables are lowercase (e.g., 'm'); rank "
+                    f"names are uppercase (e.g., 'M'). Use 'RankName:expression' "
+                    f"syntax for explicit rank names. {s}"
+                )
             if not re.fullmatch(_ISL_REGEX, part.upper()):
                 raise ValueError(
                     f"Invalid projection value: {part.upper()}. The uppercased form of "
@@ -439,6 +473,18 @@ class Einsum(EvalableModel):
     value, but non-persistent reservations are not, as they are assumed to be freed
     between each instance.
     """
+    tags: list[str] = []
+    """
+    Tags of the Einsum. Any number of tags may be given. When evaluating the
+    architecture, every tag is included in the symbol table, evaluating to True if it is
+    in the current Einsum's tags and False if it is in the tags of any other Einsum. 
+    
+    By default, tags also include: 
+    
+    - "has_reduction" if the Einsum performs a reduction 
+    - "matmul_like" if it also has three tensors and only simple rank variables (rank
+      variables that never appear inside an expression).
+    """
 
     def model_post_init(self, __context__=None) -> None:
         if self.name == "Total":
@@ -446,6 +492,13 @@ class Einsum(EvalableModel):
                 f'Einsum name "Total" is reserved for totaling across Einsums.'
                 f"Use a different name for the Einsum."
             )
+        for rank in self.rank_sizes:
+            if rank[0].islower():
+                raise ValueError(
+                    f"Rank name '{rank}' in Einsum '{self.name}' rank_sizes must start "
+                    f"with an uppercase letter. Rank names are uppercase (e.g., 'M'); "
+                    f"rank variables are lowercase (e.g., 'm')."
+                )
 
     def __init__(self, *args, **kwargs):
         if "renames" in kwargs:
@@ -515,6 +568,17 @@ class Einsum(EvalableModel):
             TensorName(t.name): t.rank_variables - fully_relevant_rank_vars[t.name]
             for t in self.tensor_accesses
         }
+
+    @property
+    def _simple_rank_variables(self) -> set[RankVariable]:
+        """
+        Rank variables that only ever appear alone (never inside an expression) across
+        every tensor access in this Einsum.
+        """
+        expression_rank_vars = oset()
+        for vs in self.tensor2expression_indexing_rank_variables.values():
+            expression_rank_vars |= vs
+        return self.rank_variables - expression_rank_vars
 
     @property
     def tensor2irrelevant_rank_variables(
@@ -627,6 +691,7 @@ class Einsum(EvalableModel):
         outputs = self.output_tensor_names
         all_ = inputs | outputs
         persistent = oset(t.name for t in self.tensor_accesses if t.persistent)
+        element_bits = {}
         element_to_child_space = {}
         all_rank_variables = self.rank_variables
         for tensor in self.tensor_names:
@@ -656,6 +721,7 @@ class Einsum(EvalableModel):
             space_type=TensorName,
             child_access_name="rank_variables",
             element_to_child_space=element_to_child_space,
+            full_space_element_to_bits_per_value=element_bits,
         )
         kwargs_rank_variables = dict(
             full_space=all_rank_variables,
@@ -686,14 +752,16 @@ class Einsum(EvalableModel):
         self: Einsum = self.model_copy()
         self.renames = RenameList(self.renames)
 
-        # Grab the default renames and update the renames with more values
-        default_renames = renames.get_renames_for_einsum("default")
-        for tensor_rename in default_renames.tensor_accesses:
-            if tensor_rename.name not in self.renames:
-                self.renames.append(tensor_rename)
-        for rank_variable_rename in default_renames.rank_variables:
-            if rank_variable_rename.name not in self.renames:
-                self.renames.append(rank_variable_rename)
+        # Grab top-level Einsum-specific renames first, then load defaults that
+        # without overwriting
+        for rename_to_consider in [self.name, "default"]:
+            rename_to_consider = renames.get_renames_for_einsum(rename_to_consider)
+            for tensor_rename in rename_to_consider.tensor_accesses:
+                if tensor_rename.name not in self.renames:
+                    self.renames.append(tensor_rename)
+            for rank_variable_rename in rename_to_consider.rank_variables:
+                if rank_variable_rename.name not in self.renames:
+                    self.renames.append(rank_variable_rename)
 
         # Parse me!
         kwargs["musteval_tryeval_to"] = True
@@ -711,7 +779,7 @@ class Einsum(EvalableModel):
         # Put these after the eval because they don't need eval and it slows things
         # down.
         all_renames = oset(r.name for r in evaluated.renames)
-        for t in workload.tensor_names:
+        for t in workload.tensor_names():
             if t not in all_renames:
                 evaluated.renames.append(
                     Rename(name=t, source=InvertibleSet(instance=(), **kwargs_tensors))
@@ -731,13 +799,12 @@ class Einsum(EvalableModel):
         # Parse the bits per value
         bits_per_value = dict()
         bpv_to_source = dict()
-        for k, v in symbol_table["workload_bits_per_value"].items():
-            bpv = eval_set_expression(
-                expression=k,
-                symbol_table=st,
-                expected_space=TensorName,
-                location=f"(workload global bits_per_value)[{k}]",
-            )
+        for k, bpv, v in eval_set_expression_dict(
+            symbol_table["workload_bits_per_value"],
+            st,
+            TensorName,
+            "workload global bits_per_value",
+        ):
             for t in bpv:
                 if t in bits_per_value:
                     raise EvaluationError(
@@ -759,7 +826,20 @@ class Einsum(EvalableModel):
                     source_field=f"tensor_accesses[{t.name}].bits_per_value",
                 )
             if t.bits_per_value is None:
-                t.bits_per_value = bits_per_value[t.name]
+                t.bits_per_value = eval_expression(
+                    bits_per_value[t.name],
+                    st,
+                    attr_name=f"bits_per_value[{t.name}]",
+                )
+
+        element_bits.update(
+            {t.name: t.bits_per_value for t in evaluated.tensor_accesses}
+        )
+        for r in evaluated.renames:
+            if isinstance(r.source, InvertibleSet) and all(
+                t in element_bits for t in r.source.instance
+            ):
+                r.source.full_space_element_to_bits_per_value = element_bits
 
         if symbol_table.get("workload_persistent_tensors", None):
             rename_st_with_evaluated = {**st}
@@ -827,16 +907,28 @@ class Workload(EvalableModel):
     matching tensors as persistent. Example: "weight" or "~(Outputs | Intermediates)".
     """
 
+    _all_tags_from_all_einsums: set[str] | None = None
+
     def _for_einsum(self, einsum_name: EinsumName) -> "Workload":
         """Return a copy of the workload with only the Einsum with the given name."""
         new = self.model_copy(deep=False)
+        new._all_tags_from_all_einsums = self._all_tags()
         new.einsums = EvalableList([e for e in new.einsums if e.name == einsum_name])
         return new
 
     def __init__(self, **data):
         if "einsums" in data and data["einsums"]:
+            flattened = []
+            to_flatten = list(reversed(data["einsums"]))
+            while to_flatten:
+                e = to_flatten.pop()
+                if isinstance(e, list):
+                    to_flatten.extend(reversed(e))
+                else:
+                    flattened.append(e)
+
             processed_einsums = []
-            for einsum_entry in data["einsums"]:
+            for einsum_entry in flattened:
                 if isinstance(einsum_entry, str):
                     einsum_entry = {"einsum": einsum_entry}
                 elif isinstance(einsum_entry, Einsum):
@@ -850,6 +942,20 @@ class Workload(EvalableModel):
         self._validate()
 
     def _validate(self):
+        for rank_var in self.iteration_space_shape:
+            if rank_var[0].isupper():
+                raise ValueError(
+                    f"Rank variable '{rank_var}' in workload iteration_space_shape must "
+                    f"start with a lowercase letter. Rank variables are lowercase "
+                    f"(e.g., 'm'); rank names are uppercase (e.g., 'M')."
+                )
+        for rank in self.rank_sizes:
+            if rank[0].islower():
+                raise ValueError(
+                    f"Rank name '{rank}' in workload rank_sizes must start with an "
+                    f"uppercase letter. Rank names are uppercase (e.g., 'M'); rank "
+                    f"variables are lowercase (e.g., 'm')."
+                )
         tensor2ranks = {}
         einsum_names = oset()
         for einsum in self.einsums:
@@ -858,10 +964,12 @@ class Workload(EvalableModel):
             einsum_names.add(einsum.name)
             for tensor_accesses in einsum.tensor_accesses:
                 tensor2ranks.setdefault(tensor_accesses.name, tensor_accesses.ranks)
-                if tensor2ranks[tensor_accesses.name] != tensor_accesses.ranks:
+                a = sorted(tensor2ranks[tensor_accesses.name])
+                b = sorted(tensor_accesses.ranks)
+                if a != b:
                     raise ValueError(
-                        f"TensorName {tensor_accesses.name} has inconsistent ranks. Found "
-                        f"{tensor2ranks[tensor_accesses.name]} and {tensor_accesses.ranks}. "
+                        f"TensorName {tensor_accesses.name} has inconsistent ranks. "
+                        f"Found {a} and {b}. "
                         "TensorName is in Einsums "
                         f"{', '.join(
                             e.name for e in self.einsums_with_tensor(tensor_accesses.name)
@@ -942,6 +1050,15 @@ class Workload(EvalableModel):
         """
         return [t for e in self.einsums for t in e.tensor_accesses if t.name == tensor]
 
+    def tensor_ranks(self, tensor: TensorName) -> oset[Rank]:
+        """
+        Returns ranks of `tensor`
+        """
+        for e in self.einsums:
+            for t in e.tensor_accesses:
+                if t.name == tensor:
+                    return oset(t.ranks)
+
     def get_iteration_space_shape_isl_string(self, einsum_name: str) -> str:
         """
         Returns the ISL string representing the iteration space of the given Einsum.
@@ -961,8 +1078,11 @@ class Workload(EvalableModel):
         my_ispace = self.iteration_space_shape
         global_shape = [my_ispace[r] for r in einsum.rank_variables if r in my_ispace]
         rank_sizes = einsum.rank_sizes
+        workload_rank_sizes = self.rank_sizes._eval_expressions(
+            symbol_table={}, validator_from_parent=EvalsTo[int]
+        )[0]
         global_rank_sizes = {
-            r: self.rank_sizes[r] for r in einsum.ranks if r in self.rank_sizes
+            r: workload_rank_sizes[r] for r in einsum.ranks if r in workload_rank_sizes
         }
 
         exprs = einsum_shape + global_shape
@@ -976,7 +1096,7 @@ class Workload(EvalableModel):
         return " and ".join(exprs)
 
     def _check_consistent_persistent(self):
-        for tensor in self.tensor_names:
+        for tensor in self.tensor_names():
             persistents = oset(
                 e.tensor_accesses[tensor].persistent
                 for e in self.einsums_with_tensor(tensor)
@@ -988,17 +1108,97 @@ class Workload(EvalableModel):
                     f"all Einsums that use the tensor."
                 )
 
-    @property
-    def tensor_names_used_in_multiple_einsums(self) -> set[TensorName]:
-        """Returns the names of the tensors that are used in multiple Einsums."""
+    def _resolve_einsum_names(
+        self, einsums: str | Iterable[str] | None
+    ) -> oset[EinsumName]:
+        """
+        Normalizes an ``einsums`` argument into an ``oset`` of Einsum names. ``None``
+        means all Einsums in the workload; a bare string means a single Einsum.
+        """
+        if einsums is None:
+            return oset(self.einsum_names)
+        if isinstance(einsums, str):
+            einsums = [einsums]
+        einsums = oset(EinsumName(e) for e in einsums)
+        unknown = einsums - oset(self.einsum_names)
+        if unknown:
+            raise ValueError(
+                f"Unknown Einsum name(s) {sorted(unknown)}. Einsums in this workload "
+                f"are {sorted(self.einsum_names)}."
+            )
+        return einsums
+
+    def tensor_names(
+        self, einsums: str | Iterable[str] | None = None
+    ) -> oset[TensorName]:
+        """
+        Returns the names of tensors in `einsums`, which may be the name of an Einsum,
+        the names of a collection of Einsums, or `None`, meaning all Einsums in the workload.
+        """
+        einsums = self._resolve_einsum_names(einsums)
         return oset(
-            t for t in self.tensor_names if len(self.einsums_with_tensor(t)) > 1
+            TensorName(t.name)
+            for e in self.einsums
+            if e.name in einsums
+            for t in e.tensor_accesses
         )
 
-    @property
-    def tensor_names(self) -> set[TensorName]:
-        """Returns the names of all tensors in the workload."""
-        return oset(TensorName(t.name) for e in self.einsums for t in e.tensor_accesses)
+    def shared_tensor_names(
+        self, einsums: str | Iterable[str] | None = None
+    ) -> oset[TensorName]:
+        """
+        Returns the names of shared tensors in `einsums`, which may be the name of an Einsum,
+        the names of a collection of Einsums, or `None`, meaning all Einsums in the workload.
+        A tensor is shared if more than one of the given Einsums accesses it.
+        """
+        einsums = self._resolve_einsum_names(einsums)
+        return oset(
+            t
+            for t in self.tensor_names(einsums)
+            if len(oset(e.name for e in self.einsums_with_tensor(t)) & einsums) > 1
+        )
+
+    def tensor_names_used_in_multiple_einsums(
+        self, einsums: str | Iterable[str] | None = None
+    ) -> oset[TensorName]:
+        """
+        Deprecated alias of :meth:`Workload.shared_tensor_names`.
+        """
+        return self.shared_tensor_names(einsums)
+
+    def input_tensors(
+        self, einsums: str | Iterable[str] | None = None
+    ) -> oset[TensorName]:
+        """
+        Returns the names of input tensors in `einsums`, which may be the name of an Einsum,
+        the names of a collection of Einsums, or `None`, meaning all Einsums in the workload.
+        A tensor is an input if none of the given Einsums writes it.
+        """
+        einsums = self._resolve_einsum_names(einsums)
+        return oset(
+            t
+            for t in self.tensor_names(einsums)
+            if not (
+                oset(e.name for e in self.einsums_with_tensor_as_output(t)) & einsums
+            )
+        )
+
+    def output_tensors(
+        self, einsums: str | Iterable[str] | None = None
+    ) -> oset[TensorName]:
+        """
+        Returns the names of output tensors in `einsums`, which may be the name of an Einsum,
+        the names of a collection of Einsums, or `None`, meaning all Einsums in the workload.
+        A tensor is an output if none of the given Einsums reads it.
+        """
+        einsums = self._resolve_einsum_names(einsums)
+        return oset(
+            t
+            for t in self.tensor_names(einsums)
+            if not (
+                oset(e.name for e in self.einsums_with_tensor_as_input(t)) & einsums
+            )
+        )
 
     @property
     def rank_variables(self) -> set[RankVariable]:
@@ -1060,7 +1260,7 @@ class Workload(EvalableModel):
                         dir="forward",
                     )
                     graph.add_edge(edge)
-        return _SVGJupyterRender(graph.create_svg(prog="dot").decode("utf-8"))
+        return _SVGJupyterRender(_render_svg(graph))
 
     def _eval_expressions(
         self, symbol_table: dict[str, Any], *args, renames: Renames, **kwargs
@@ -1136,7 +1336,7 @@ class Workload(EvalableModel):
             share indexing rank variables with the key.
         """
         rank2rankvars = {}
-        for tensor in self.tensor_names:
+        for tensor in self.tensor_names():
             for acc in self.accesses_for_tensor(tensor):
                 for rank, rank_vars in acc.rank2rank_variables.items():
                     rank2rankvars.setdefault(rank, oset()).update(rank_vars)
@@ -1208,7 +1408,7 @@ class Workload(EvalableModel):
 
         return get_tensor_size(self, tensor)
 
-    def n_computes(self, einsum_name: str | None = None) -> int:
+    def n_computes(self, einsum_name: str | Iterable[str] | None = None) -> int:
         """
         Returns the number of computes for the given Einsum name, or total computes
         across all Einsums if ``einsum_name`` is ``None``.
@@ -1216,8 +1416,9 @@ class Workload(EvalableModel):
         Parameters
         ----------
         einsum_name:
-            The name of the Einsum. If ``None``, returns the total number of computes
-            across all Einsums.
+            - If a str, returns the number of computes of that Einsum,
+            - If an iterable, returns the total for all the Einsums,
+            - If ``None``, returns the total number of computes of all Einsums.
 
         Returns
         -------
@@ -1227,25 +1428,167 @@ class Workload(EvalableModel):
         from accelforge.frontend._workload_isl._isl import get_operation_space_size
 
         if einsum_name is None:
-            return sum(get_operation_space_size(self, e) for e in self.einsum_names)
-        return get_operation_space_size(self, einsum_name)
+            einsum_name = self.einsum_names
+        elif isinstance(einsum_name, str):
+            einsum_name = [einsum_name]
+        return sum(get_operation_space_size(self, e) for e in einsum_name)
 
-    def get_compute_intensity(self, einsum_name: str) -> float:
+    def einsum_has_reduction(self, einsum_name: str) -> bool:
         """
-        Returns the compute intensity of the given Einsum, defined as the number of
-        computes divided by the total number of tensor elements.
+        Returns whether the given Einsum performs a reduction; that is, whether its
+        number of computes exceeds the number of values in its smallest output tensor.
+        """
+        einsum = self.einsums[einsum_name]
+        n_outputs = min(self.get_tensor_size(t) for t in einsum.output_tensor_names)
+        return self.n_computes(einsum_name) > n_outputs
+
+    def _rearrange_to_increase_fusion_opportunity(self) -> list[EinsumName]:
+        """ 
+        VIBE CODE WARNING: This function is vibe coded. See
+        rearrange_workload_to_increase_fusion_opportunity() in spec.py
+        """
+        max_placed_sets_per_size = 10_000
+        einsums = list(self.einsums)
+        n = len(einsums)
+        
+        bpv = {t.name: t.bits_per_value for e in einsums for t in e.tensor_accesses}
+        producers = {t: i for i, e in enumerate(einsums) for t in e.output_tensor_names}
+        consumers = {
+            t: sum(1 << j for j, e in enumerate(einsums) if t in e.input_tensor_names)
+            for t in producers
+        }
+        tensor_bits = {t: self.get_tensor_size(t) * bpv[t] for t in producers}
+        needs = [
+            sum(1 << producers[t] for t in e.input_tensor_names if t in producers)
+            for e in einsums
+        ]
+        # Placing an Einsum makes its read outputs live and kills the inputs it is the
+        # last reader of
+        produces = [
+            sum(tensor_bits[t] for t in e.output_tensor_names if consumers[t])
+            for e in einsums
+        ]
+        kills = [
+            [
+                (consumers[t], tensor_bits[t])
+                for t in e.input_tensor_names
+                if t in producers
+            ]
+            for e in einsums
+        ]
+
+        # For each set of placed Einsums: the cheapest cost to reach it, the live bits
+        # there and the Einsum placed last
+        placed_last = {}
+        frontier = {0: (0, 0)}
+        while frontier:
+            reached = {}
+            for placed, (cost, live) in frontier.items():
+                for i in range(n):
+                    if placed >> i & 1 or needs[i] & ~placed:
+                        continue
+                    with_i = placed | 1 << i
+                    live_i = live + produces[i]
+                    for other_readers, bits in kills[i]:
+                        if not other_readers & ~with_i:
+                            live_i -= bits
+                    cost_i = cost + live_i
+                    if with_i not in reached or cost_i < reached[with_i][0]:
+                        reached[with_i] = (cost_i, live_i)
+                        placed_last[with_i] = i
+            if max_placed_sets_per_size and len(reached) > max_placed_sets_per_size:
+                cheapest = sorted(reached, key=lambda p: reached[p][0])
+                reached = {p: reached[p] for p in cheapest[:max_placed_sets_per_size]}
+            frontier = reached
+
+        order = []
+        placed = (1 << n) - 1
+        while placed:
+            i = placed_last[placed]
+            order.append(einsums[i])
+            placed &= ~(1 << i)
+        order.reverse()
+        self.einsums = EvalableList(order)
+        return [e.name for e in order]
+
+    def _einsum_tags(self, einsum_name: str) -> set[str]:
+        """
+        Returns the tags of the given Einsum: the tags given by the user plus the
+        default tags "has_reduction" and "matmul_like" where they apply.
+        """
+        einsum = self.einsums[einsum_name]
+        tags = oset(einsum.tags)
+        if self.einsum_has_reduction(einsum_name):
+            tags.add("has_reduction")
+            all_simple = einsum._simple_rank_variables == einsum.rank_variables
+            if len(einsum.tensor_names) == 3 and all_simple:
+                tags.add("matmul_like")
+        return tags
+
+    def _all_tags(self) -> set[str]:
+        """Returns the default tags plus every tag given to any Einsum."""
+        if self._all_tags_from_all_einsums is not None:
+            return self._all_tags_from_all_einsums
+        default_tags = oset(("has_reduction", "matmul_like"))
+        return default_tags.union(*(e.tags for e in self.einsums))
+
+    def _tags_as_bools(self, einsum_name: str | None) -> dict[str, bool]:
+        """
+        Returns every tag of every Einsum, True if the given Einsum has it and False
+        otherwise. All True if no Einsum is given.
+        """
+        every_tag = self._all_tags()
+        tags = every_tag if einsum_name is None else self._einsum_tags(einsum_name)
+        return {t: t in tags for t in every_tag}
+
+    def get_compute_intensity(
+        self, einsum_name: str | Iterable[str] | None = None
+    ) -> float:
+        """
+        Returns the compute intensity of the given Einsum(s), defined as the number of
+        computes divided by the total number of elements in their input and output
+        tensors. Tensors that are internal to the given Einsums (written by one and
+        read by another) are excluded from the denominator.
 
         Parameters
         ----------
         einsum_name:
-            The name of the Einsum.
+            - If a str, the compute intensity of that Einsum,
+            - If an iterable, the compute intensity of that group of Einsums,
+            - If ``None``, the compute intensity of the whole workload.
 
         Returns
         -------
         float
             The compute intensity in #computes / #tensor elements.
         """
-        return self.n_computes(einsum_name) / sum(
-            self.get_tensor_size(tensor)
-            for tensor in self.einsums[einsum_name].tensor_names
+        n_computes = self.n_computes(einsum_name)
+        total_tensor_size = sum(
+            self.get_tensor_size(t)
+            for t in self.input_tensors(einsum_name) | self.output_tensors(einsum_name)
         )
+        if total_tensor_size == 0:
+            raise ValueError(
+                f"Cannot compute the compute intensity of {einsum_name}: it has no "
+                f"input or output tensors."
+            )
+        return n_computes / total_tensor_size
+
+    def get_per_tensor_compute_intensity(self) -> dict[TensorName, float]:
+        """
+        Returns the compute intensity of each tensor, defined as the sum of the number
+        of computes of each Einsum that accesses the tensor, divided by the number of
+        elements in the tensor.
+
+        Returns
+        -------
+        dict[TensorName, float]
+            The compute intensity of each tensor in #computes / #tensor elements.
+        """
+        return {
+            tensor: sum(
+                self.n_computes(e.name) for e in self.einsums_with_tensor(tensor)
+            )
+            / self.get_tensor_size(tensor)
+            for tensor in self.tensor_names()
+        }

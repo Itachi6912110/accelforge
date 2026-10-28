@@ -1,7 +1,7 @@
 """
 Regression tests for the FFM mapper.
 
-    python tests/test_regression.py            # (re)generate reference json
+    python tests/test_regression.py            # (re)generate both reference jsons
     pytest tests/test_regression.py -v         # compare against reference
 """
 
@@ -20,52 +20,133 @@ from accelforge.mapper import Metrics
 JSON_PATH = Path(__file__).parent / "regression_reference.json"
 HWCOMPONENTS_JSON_PATH = Path(__file__).parent / "hwcomponents_expected.json"
 
+_PF = {"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 256}
+
 REGRESSION_CASES = {
     af.examples.arches.simple: [
         {
-            "workload": af.examples.workloads.matmuls,
+            "workload": af.examples.workloads.basic.matmuls_any_einsums,
             "jinja_parse_data": {"N_EINSUMS": 2, "M": 64, "KN": 64},
         },
-        {"workload": af.examples.workloads.three_matmuls_annotated},
-        {"workload": af.examples.workloads.gpt3_175B},
-        {"workload": af.examples.workloads.gpt3_175B_kv_cache},
-        # {"workload": af.examples.workloads.gpt3_6_7B},
-        # {"workload": af.examples.workloads.gpt3_6_7B_kv_cache},
+        {"workload": af.examples.workloads.basic.three_matmuls_annotated},
+        {
+            "workload": af.examples.workloads.transformers.gpt.gpt3_175B,
+            "jinja_parse_data": {
+                "BATCH_SIZE": 1,
+                "DECODE": False,
+                "N_NEW_TOKENS": 2048,
+            },
+        },
+        {
+            "workload": af.examples.workloads.transformers.gpt.gpt3_175B,
+            "jinja_parse_data": {
+                "BATCH_SIZE": 1,
+                "DECODE": True,
+                "N_NEW_TOKENS": 1,
+                "N_CACHED_TOKENS": 2047,
+            },
+        },
+        # {"workload": af.examples.workloads.transformers.gpt.gpt3_6_7B, "jinja_parse_data": {"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048}},
+        # {"workload": af.examples.workloads.transformers.gpt.gpt3_6_7B, "jinja_parse_data": {"BATCH_SIZE": 1, "DECODE": True, "N_NEW_TOKENS": 1, "N_CACHED_TOKENS": 2047}},
     ],
     af.examples.arches.eyeriss: [
         {
-            "workload": af.examples.workloads.matmuls,
+            "workload": af.examples.workloads.basic.matmuls_any_einsums,
             "jinja_parse_data": {"N_EINSUMS": 2, "M": 64, "KN": 64},
         },
-        {"workload": af.examples.workloads.three_matmuls_annotated},
-        # {"workload": af.examples.workloads.gpt3_175B},
-        # {"workload": af.examples.workloads.gpt3_175B_kv_cache},
-        {"workload": af.examples.workloads.gpt3_6_7B},
-        {"workload": af.examples.workloads.gpt3_6_7B_kv_cache},
+        {"workload": af.examples.workloads.basic.three_matmuls_annotated},
+        # {"workload": af.examples.workloads.transformers.gpt.gpt3_175B, "jinja_parse_data": {"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048}},
+        # {"workload": af.examples.workloads.transformers.gpt.gpt3_175B, "jinja_parse_data": {"BATCH_SIZE": 1, "DECODE": True, "N_NEW_TOKENS": 1, "N_CACHED_TOKENS": 2047}},
+        {
+            "workload": af.examples.workloads.transformers.gpt.gpt3_6_7B,
+            "jinja_parse_data": {
+                "BATCH_SIZE": 1,
+                "DECODE": False,
+                "N_NEW_TOKENS": 2048,
+            },
+        },
+        {
+            "workload": af.examples.workloads.transformers.gpt.gpt3_6_7B,
+            "jinja_parse_data": {
+                "BATCH_SIZE": 1,
+                "DECODE": True,
+                "N_NEW_TOKENS": 1,
+                "N_CACHED_TOKENS": 2047,
+            },
+        },
     ],
     af.examples.arches.simba: [
         {
-            "workload": af.examples.workloads.matmuls,
+            "workload": af.examples.workloads.basic.matmuls_any_einsums,
             "jinja_parse_data": {"N_EINSUMS": 2, "M": 64, "KN": 64},
         },
-        {"workload": af.examples.workloads.three_matmuls_annotated},
-        # {"workload": af.examples.workloads.gpt3_175B},
-        # {"workload": af.examples.workloads.gpt3_175B_kv_cache},
-        {"workload": af.examples.workloads.gpt3_6_7B},
-        {"workload": af.examples.workloads.gpt3_6_7B_kv_cache},
+        {"workload": af.examples.workloads.basic.three_matmuls_annotated},
+        # {"workload": af.examples.workloads.transformers.gpt.gpt3_175B, "jinja_parse_data": {"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048}},
+        # {"workload": af.examples.workloads.transformers.gpt.gpt3_175B, "jinja_parse_data": {"BATCH_SIZE": 1, "DECODE": True, "N_NEW_TOKENS": 1, "N_CACHED_TOKENS": 2047}},
+        {
+            "workload": af.examples.workloads.transformers.gpt.gpt3_6_7B,
+            "jinja_parse_data": {
+                "BATCH_SIZE": 1,
+                "DECODE": False,
+                "N_NEW_TOKENS": 2048,
+            },
+        },
+        {
+            "workload": af.examples.workloads.transformers.gpt.gpt3_6_7B,
+            "jinja_parse_data": {
+                "BATCH_SIZE": 1,
+                "DECODE": True,
+                "N_NEW_TOKENS": 1,
+                "N_CACHED_TOKENS": 2047,
+            },
+        },
     ],
     af.examples.arches.tpu_v4i: [
         {
-            "workload": af.examples.workloads.matmuls,
+            "workload": af.examples.workloads.basic.matmuls_any_einsums,
             "jinja_parse_data": {"N_EINSUMS": 2, "M": 64, "KN": 64},
         },
-        {"workload": af.examples.workloads.three_matmuls_annotated},
-        {"workload": af.examples.workloads.gpt3_175B},
-        {"workload": af.examples.workloads.gpt3_175B_kv_cache},
-        # {"workload": af.examples.workloads.gpt3_6_7B},
-        # {"workload": af.examples.workloads.gpt3_6_7B_kv_cache},
+        {"workload": af.examples.workloads.basic.three_matmuls_annotated},
+        {
+            "workload": af.examples.workloads.transformers.gpt.gpt3_175B,
+            "jinja_parse_data": {
+                "BATCH_SIZE": 1,
+                "DECODE": False,
+                "N_NEW_TOKENS": 2048,
+            },
+        },
+        {
+            "workload": af.examples.workloads.transformers.gpt.gpt3_175B,
+            "jinja_parse_data": {
+                "BATCH_SIZE": 1,
+                "DECODE": True,
+                "N_NEW_TOKENS": 1,
+                "N_CACHED_TOKENS": 2047,
+            },
+        },
+        # {"workload": af.examples.workloads.transformers.gpt.gpt3_6_7B, "jinja_parse_data": {"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048}},
+        # {"workload": af.examples.workloads.transformers.gpt.gpt3_6_7B, "jinja_parse_data": {"BATCH_SIZE": 1, "DECODE": True, "N_NEW_TOKENS": 1, "N_CACHED_TOKENS": 2047}},
+    ],
+    af.examples.arches.snowcat: [
+        {"workload": af.examples.workloads.basic.matmuls_any_einsums, "jinja_parse_data": {"N_EINSUMS": 2, "M": 64, "KN": 64}},
+        {"workload": af.examples.workloads.basic.matvecs},
+        {"workload": af.examples.workloads.basic.three_matmuls_annotated},
+        {"workload": af.examples.workloads.cnns.mobilenet.mobilenet_28},
+        {"workload": af.examples.workloads.transformers.mamba, "jinja_parse_data": _PF},
+        {"workload": af.examples.workloads.transformers.gpt.gpt3_6_7B, "jinja_parse_data": _PF},
+        {"workload": af.examples.workloads.transformers.gpt.gpt3_175B, "jinja_parse_data": _PF},
+        {"workload": af.examples.workloads.transformers.llama.llama3_8B, "jinja_parse_data": _PF},
+        {"workload": af.examples.workloads.transformers.mixtral, "jinja_parse_data": _PF},
+        {"workload": af.examples.workloads.transformers.qwen.qwen3_8B, "jinja_parse_data": _PF},
+        {"workload": af.examples.workloads.transformers.qwen.qwen3_30B_A3B, "jinja_parse_data": _PF},
+        {"workload": af.examples.workloads.transformers.deepseek, "jinja_parse_data": _PF},
+        {"workload": af.examples.workloads.transformers.llama.llama4_scout, "jinja_parse_data": {**_PF, "ATTENTION_TYPE": "grouped_query"}},
+        {"workload": af.examples.workloads.transformers.llama.llama4_maverick, "jinja_parse_data": {**_PF, "ATTENTION_TYPE": "grouped_query"}},
     ],
 }
+
+
+ENERGY_UNFUSED_ARCHES = {af.examples.arches.snowcat}
 
 
 def cast(d):
@@ -87,20 +168,22 @@ def _key(arch, workload, fused):
     )
 
 
-def _run(arch, workload, fused, print_progress: bool = True):
+def _run(arch, workload, fused):
     spec = Spec.from_yaml(
         arch,
         workload["workload"],
         jinja_parse_data=workload.get("jinja_parse_data"),
     )
-    spec.mapper.metrics = Metrics.ENERGY
+    spec.mapper.metrics = (
+        Metrics.ENERGY if arch in ENERGY_UNFUSED_ARCHES else Metrics.ENERGY_DELAY_PRODUCT
+    )
     spec.mapper.max_fused_loops = 1
     if not fused:
         for node in spec.arch.nodes:
             if isinstance(node, af.arch.Memory):
                 node.tensors.keep = "All"
                 break
-    mappings = spec.map_workload_to_arch(print_progress=print_progress)
+    mappings = spec.map_workload_to_arch(one_pbar_only=True)
     m = mappings[0]
     return cast(
         {
@@ -118,8 +201,9 @@ def _run(arch, workload, fused, print_progress: bool = True):
 
 def _cases(fusion_choices=(False, True)):
     for arch, workloads in REGRESSION_CASES.items():
+        choices = (False,) if arch in ENERGY_UNFUSED_ARCHES else fusion_choices
         for workload in workloads:
-            for fused in fusion_choices:
+            for fused in choices:
                 yield _key(arch, workload, fused), arch, workload, fused
 
 
@@ -128,7 +212,7 @@ def generate(fusion_choices=(False, True)):
     from accelforge.util import parallel, delayed, get_n_parallel_jobs
 
     jobs = {
-        key: delayed(_run)(arch, workload, fused, print_progress=not PARALLEL_GENERATE)
+        key: delayed(_run)(arch, workload, fused)
         for key, arch, workload, fused in _cases(fusion_choices)
     }
     n_jobs = 1 if not PARALLEL_GENERATE else get_n_parallel_jobs()
@@ -205,7 +289,7 @@ for _k, _a, _w, _f in _cases():
 class TestHWComponentsConsistency(unittest.TestCase):
     """
     Checks that hwcomponents models produce expected per-component area, energy, leak
-    power, and latency.
+    power, and throughput.
 
     If these fail, then the other regression tests will likely fail as well.
     """
@@ -230,12 +314,10 @@ class TestHWComponentsConsistency(unittest.TestCase):
         for name, arch_path in arches.items():
             spec = Spec.from_yaml(
                 arch_path,
-                af.examples.workloads.matmuls,
+                af.examples.workloads.basic.matmuls_any_einsums,
                 jinja_parse_data={"N_EINSUMS": 2, "M": 64, "KN": 64},
             )
-            spec = spec.calculate_component_area_energy_latency_leak(
-                einsum_name="Matmul0"
-            )
+            spec = spec.calculate_component_costs(einsum_name="Matmul0")
             components = {}
             for node in spec.arch.nodes:
                 if not isinstance(node, (af.arch.Memory, af.arch.Compute)):
@@ -252,6 +334,8 @@ class TestHWComponentsConsistency(unittest.TestCase):
                         act["energy"] = float(a.energy)
                     if a.latency is not None:
                         act["latency"] = float(a.latency)
+                    if a.throughput is not None:
+                        act["throughput"] = float(a.throughput)
                     if act:
                         actions[a.name] = act
                 if actions:
@@ -271,7 +355,7 @@ class TestHWComponentsConsistency(unittest.TestCase):
                     exp_val = exp_comp[field]
                     act_val = act_comp.get(field)
                     self.assertIsNotNone(act_val, f"{name}.{comp_name}.{field} missing")
-                    delta = max(abs(exp_val) * 1e-6, 1e-15)
+                    delta = max(abs(exp_val) * 1e-9, 1e-18)
                     self.assertAlmostEqual(
                         act_val,
                         exp_val,
@@ -290,7 +374,14 @@ class TestHWComponentsConsistency(unittest.TestCase):
                     self.assertIsNotNone(
                         act_val, f"{name}.{comp_name}.{act_name}.{field} missing"
                     )
-                    delta = max(abs(exp_val) * 1e-6, 1e-15)
+                    if math.isinf(exp_val) or math.isinf(act_val):
+                        self.assertEqual(
+                            act_val,
+                            exp_val,
+                            msg=f"{name}.{comp_name}.{act_name}.{field}: {act_val} != {exp_val}",
+                        )
+                        continue
+                    delta = max(abs(exp_val) * 1e-9, 1e-18)
                     self.assertAlmostEqual(
                         act_val,
                         exp_val,
@@ -311,5 +402,51 @@ for _arch_name in ["eyeriss", "simba", "simple", "tpu_v4i"]:
     setattr(TestHWComponentsConsistency, _test_name, _make_test())
 
 
+def generate_hwcomponents():
+    arches = {
+        "eyeriss": af.examples.arches.eyeriss,
+        "simba": af.examples.arches.simba,
+        "simple": af.examples.arches.simple,
+        "tpu_v4i": af.examples.arches.tpu_v4i,
+    }
+    results = {}
+    for name, arch_path in arches.items():
+        spec = Spec.from_yaml(
+            arch_path,
+            af.examples.workloads.basic.matmuls_any_einsums,
+            jinja_parse_data={"N_EINSUMS": 2, "M": 64, "KN": 64},
+        )
+        spec = spec.calculate_component_costs(einsum_name="Matmul0")
+        components = {}
+        for node in spec.arch.nodes:
+            if not isinstance(node, (af.arch.Memory, af.arch.Compute)):
+                continue
+            comp = {}
+            if node.area is not None:
+                comp["area"] = float(node.area)
+            if node.leak_power is not None:
+                comp["leak_power"] = float(node.leak_power)
+            actions = {}
+            for a in node.actions:
+                act = {}
+                if a.energy is not None:
+                    act["energy"] = float(a.energy)
+                if a.latency is not None:
+                    act["latency"] = float(a.latency)
+                if a.throughput is not None:
+                    act["throughput"] = float(a.throughput)
+                if act:
+                    actions[a.name] = act
+            if actions:
+                comp["actions"] = actions
+            if comp:
+                components[node.name] = comp
+        results[name] = components
+    with open(HWCOMPONENTS_JSON_PATH, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Wrote {len(results)} arch results to {HWCOMPONENTS_JSON_PATH}")
+
+
 if __name__ == "__main__":
+    generate_hwcomponents()
     generate(fusion_choices=(True, False))

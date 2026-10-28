@@ -66,11 +66,25 @@ class FFM(EvalableModel):
     max_fused_loops_per_rank_variable: int = 1
     """ The maximum number of fused loops in a pmapping for a given rank variable. """
 
+    tiling_coarseness: float = 1
+    """
+    When enumerating tile shapes, a tile shape is omitted if it is less than
+    tiling_coarseness times the next-inner tile shape. Set to 1 to disable. For example,
+    tiling_coarseness=2 means each enumerated tile shape must be at least 2x the
+    next-inner tile shape. Recommended to use 1<=tiling_coarseness<=2
+    explore_imperfect_temporal_loops=True and/or explore_imperfect_spatial_loops=True,
+    to get good mappings without exploring too many tile shapes.
+    """
+
     max_fused_loops: float | int = float("inf")
     """ The maximum total number of fused loops in a pmapping. """
 
-    max_loops: float | int = float("inf")
-    """ The maximum total loops in a pmapping. """
+    max_loops_per_spatial_dimension: float | int = float("inf")
+    """
+    The maximum total spatial loops mapped to a fanout in the architecture. This is
+    per-dimension, so a fanout with 2 dimensions can have up to 2 *
+    max_loops_per_spatial_dimension spatial loops mapped to it.
+    """
 
     max_loops_minus_ranks: float | int = float("inf")
     """
@@ -115,13 +129,71 @@ class FFM(EvalableModel):
     """ The maximum time limit for the mapper. """
 
     time_limit_per_pmapping_template: float | int = float("inf")
-    """ The maximum time limit per pmapping template. """
+    """
+    The maximum CPU time, in seconds, to spend on one pmapping template. A template that
+    exceeds it prints an error message and drops the current template, but allows other
+    templates to continue.
+    """
 
     max_pmapping_templates_per_einsum: float | int = float("inf")
     """
     The maximum number of pmapping templates per Einsum. Once this many templates are
     generated, the mapper will stop generating more. This is useful for debugging (why
     are so many templates being generated?).
+    """
+
+    explore_imperfect_spatial_loops: bool = False
+    """
+    If True, spatial loop bounds may not perfectly divide the full rank shape. This
+    takes longer to explore and requires more RAM, but mappings found may have better
+    spatial utilization. This is especially helpful when the rank shapes have few prime
+    factors.
+
+    For example, if the rank shape is 7, then explore_imperfect_spatial_loops=False
+    would explore loop bounds of 1, 7 and explore_imperfect_spatial_loops=True would
+    explore loop bounds of 1, 2, 3, 4, 7. This would be helfpul for a size-4 PE array,
+    where we could get full utilization using 4 PEs in one timestep and 3 PEs in another
+    timestep.
+
+    Only "simple" rank variables (those appearing alone and not inside an expression in
+    any tensor access) may have imperfect loop bounds.
+    
+    See tiling_coarseness for how to reduce the number of tile shapes explored when this
+    is set.
+    
+    On for optimization levels >= 4.
+    """
+
+    explore_imperfect_temporal_loops: bool = False
+    """
+    If True, temporal loop bounds may not perfectly divide the full rank shape. This
+    takes longer to explore and requires more RAM, but mappings found may have lower
+    memory usage. This is especially helpful when the rank shapes have few prime
+    factors.
+
+    For example, if the rank shape is 7, then explore_imperfect_temporal_loops=False
+    would explore loop bounds of 1, 7 and explore_imperfect_temporal_loops=True would
+    explore loop bounds of 1, 2, 3, 4, 7.
+
+    Only "simple" rank variables (those appearing alone and not inside an expression in
+    any tensor access) may have imperfect loop bounds.
+    
+    See tiling_coarseness for how to reduce the number of tile shapes explored when this
+    is set.
+    
+    On for optimization levels >= 4.
+    """
+
+    drop_more_fused_pmappings_that_are_worse: bool = False
+    """
+    If set to True, drop pmappings that are worse, in all objective metrics and
+    reservations, than a less-fused pmapping. A pmapping is less-fused than another if
+    the backing storages of all its tensors are same-or-farther from compute, with at
+    least one strictly farther. Two pmappings are only compared if they have the same
+    reservation indices up to the number of compared loops and, for every tensor with
+    the same backing storage in both, the loops and tile shapes above that tensor's
+    backing storage match; if they differ, the pmappings cannot be compared. This
+    pruning is disabled for copy Einsums. On for optimization levels <= 2.
     """
 
     prioritize_reuse_of_unfused_tensors: bool = False
@@ -131,7 +203,21 @@ class FFM(EvalableModel):
     tensor_order_options specified for a memory level. The result of this is that the
     mapper will avoid mappings that repeatedly fetch unfused tensors in order to allow
     for smaller tiles of fused tensors. This may lead to better mappings,
-    but slows down the mapper.
+    but slows down the mapper. On for optimization levels <= 1.
+    """
+
+    greedy_prune_simplified_objectives: bool = False
+    """
+    If EDP is an objective, then instead of having energy & latency separately, prunes
+    pmappings by (energy * latency). This may miss an optimal mapping if other pmappings
+    contribute significantly to either energy or latency but not both, making the
+    tradeoff between energy and latency asymmetric across Einsums.
+
+    If latency is an objective or a part of objectives, then takes the total latency at
+    any given point and prunes pmappings by that rather than taking per-component
+    latencies. This may miss an optimal mapping if the per-component latencies may be
+    shared across later Einsums (e.g, Einsum A's long DRAM latency masked by Einsum C's
+    long compute latency).
     """
 
     _count_option_for_mapsapce_size_evaluation: tuple[
@@ -185,10 +271,28 @@ class FFM(EvalableModel):
     measurements.
     """
 
-    _metric_aggregator: Literal["sum", "prod", "any"] = "any"
-    """
-    How to aggregate metrics together to determine whether one pmapping is better than
-    another. "sum" means that the metrics are added together, "prod" means that the
-    metrics are multiplied together, and "any" means that any metric being better than
-    the other is enough to consider it non-dominated.
-    """
+    def set_optimization_level(self, level: int = 3) -> None:
+        """
+        Sets the optimization level for the mapper. The higher the level, the slower the
+        mapper and the better the mapping.
+
+        O3, the default, returns the optimal mapping for a perfectly-factorized
+        mapspace. O4 explores perfect and imperfect mapspaces. O0, O1, and O2 explore
+        the perfect mapspace with heuristics to speed up the mapper.
+        """
+
+        if level <= 0:
+            self.max_fused_loops = 0
+            self.tiling_coarseness = 4
+            self.objective_tolerance = 1
+            self.resource_usage_tolerance = 0.2
+
+        if level <= 1:
+            self.max_fused_loops = 2
+
+        self.drop_more_fused_pmappings_that_are_worse = level <= 2
+        self.greedy_prune_simplified_objectives = level <= 2
+        self.prioritize_reuse_of_unfused_tensors = level <= 1
+
+        self.explore_imperfect_spatial_loops = level >= 4
+        self.explore_imperfect_temporal_loops = level >= 4

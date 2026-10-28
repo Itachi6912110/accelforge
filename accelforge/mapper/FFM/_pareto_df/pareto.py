@@ -4,7 +4,7 @@ import time
 
 from accelforge._accelerated_imports import pandas as pd
 
-from paretoset import paretoset
+# from paretoset import paretoset
 from joblib import delayed
 from sympy import factorint
 
@@ -17,10 +17,11 @@ from accelforge.mapper.FFM._pareto_df.df_convention import (
     col_used_in_pareto,
     is_fused_loop_col,
     is_n_iterations_col,
-    is_objective_col,
+    uses_objective_tolerance,
 )
 
 from .fast_pareto import fast_pareto_mask
+from accelforge.util.indent import print
 
 
 def dominates(a: pd.Series, b: pd.Series) -> bool:
@@ -218,15 +219,12 @@ def multi_round(
 
 def makepareto(
     mappings: pd.DataFrame,
-    columns: list[str] = None,
     split_by_cols: list[str] = (),
     resource_usage_tolerance: float = 0,
     objective_tolerance: float = 0,
     absolute_resource_usage_tolerance: float = 0,
 ) -> pd.DataFrame:
-    # return makepareto_time_compare(mappings)
-    if columns is None:
-        columns = [c for c in mappings.columns if col_used_in_pareto(c)]
+    columns = [c for c in mappings.columns if col_used_in_pareto(c)]
 
     # Number of iterations is derived from the tile shapes, so we don't need to use it,
     # since any row with the same tile shapes will have the same number of iterations.
@@ -236,20 +234,26 @@ def makepareto(
         if is_fused_loop_col(c) and not is_n_iterations_col(c)
     ]
 
+    columns_set = columns if isinstance(columns, set) else set(columns)
+    split_by_cols_set = set(split_by_cols)
     goals = []
     to_pareto = []
     for c in mappings.columns:
-        if mappings[c].nunique() <= 1:
+        series = mappings[c]
+        arr = series.values
+        # Skip constant columns. (arr == arr[0]).all() is ~3× faster than
+        # pandas .nunique() on the object dtypes this path sees.
+        if len(arr) <= 1 or (arr == arr[0]).all():
             continue
 
-        if c in columns and is_objective_col(c):
-            to_pareto.append(logscale_to_tolerance(mappings[c], objective_tolerance))
+        if c in columns_set and uses_objective_tolerance(c):
+            to_pareto.append(logscale_to_tolerance(series, objective_tolerance))
             goals.append("min")
-        elif c in split_by_cols:
-            to_pareto.append(mappings[c])
+        elif c in split_by_cols_set:
+            to_pareto.append(series)
             goals.append("diff")
-        elif c in columns:
-            x = mappings[c]
+        elif c in columns_set:
+            x = series
             if col2reservation(c) is not None:
                 x = multi_round(
                     x, resource_usage_tolerance, absolute_resource_usage_tolerance

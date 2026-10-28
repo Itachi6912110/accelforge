@@ -6,6 +6,7 @@ from typing import Any, Callable
 from uuid import UUID, uuid4
 
 import accelforge.frontend.arch as arch
+from accelforge.frontend.arch._flattened_arch import FlattenedArch
 from accelforge.util._frozenset import oset
 from accelforge.frontend.mapping import (
     Mapping,
@@ -57,15 +58,19 @@ class Job:
     mapping: Mapping | None = None
     constraints: MappingConstraints | None = None
     fusable_tensors: set[TensorName] | None = None
-    flattened_arch: list[arch.Leaf] | None = None
+    flattened_arch: FlattenedArch | None = None
 
     einsum_name: EinsumName | None = None
     """If the Job is for a single einsum, this is the einsum name."""
 
     compatibility: Compatibility | None = None
     memories_track_all: list[str] | None = None
+    """ Memories to track for reservations that may be shared accross pmappings."""
     memories_track_pmappings_only: list[str] | None = None
+    """ Memories to track for reservations that are never shared accross pmappings."""
     ignored_resources: set[str] | None = None
+    components_track_latency: set[str] | None = None
+    """ Components whose latency may be shared across pmappings """
     time_limit: float | int = float("inf")
     memory_limit: float | int = float("inf")
     messages: list[str] = field(default_factory=list)
@@ -73,6 +78,7 @@ class Job:
     tensor_to_relevancy: (
         dict[TensorName, dict[RankVariable, Relevant | PartiallyRelevant]] | None
     ) = None
+    """ Tensor --> dict of rank variables: relevancy"""
 
     n_total_pmappings: int = 1
     n_valid_pmappings: int = 1
@@ -85,6 +91,10 @@ class Job:
     ranks_with_tile_pattern: set[Rank] | None = None
 
     intermediate_tensors: set[TensorName] | None = None
+
+    explore_imperfect_spatial_loops: bool = False
+    explore_imperfect_temporal_loops: bool = False
+    allow_imperfect_all: bool = False
 
     @property
     def einsum(self) -> Einsum:
@@ -239,3 +249,11 @@ class SameCompatibilityJobs(SameEinsumJobs):
 
     def split(self) -> list["SameCompatibilityJobs"]:
         return [SameCompatibilityJobs([j]) for j in self]
+
+
+class SameTemplateJobs(SameCompatibilityJobs):
+    """Jobs with the same template."""
+
+    @property
+    def mapping(self) -> Mapping:
+        return self.mapping

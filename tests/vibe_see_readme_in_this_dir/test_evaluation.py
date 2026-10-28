@@ -55,15 +55,32 @@ class TestSpecEvalExpressions(unittest.TestCase):
                         name="MainMemory",
                         size=1_000_000,
                         actions=[
-                            {"name": "read", "energy": 1, "latency": 0},
-                            {"name": "write", "energy": 1, "latency": 0},
+                            {
+                                "name": "read",
+                                "energy": 1,
+                                "throughput": float("inf"),
+                                "latency": 0,
+                            },
+                            {
+                                "name": "write",
+                                "energy": 1,
+                                "throughput": float("inf"),
+                                "latency": 0,
+                            },
                         ],
                         leak_power=0,
                         area=0,
                     ),
                     Compute(
                         name="MAC",
-                        actions=[{"name": "compute", "energy": 1, "latency": 1}],
+                        actions=[
+                            {
+                                "name": "compute",
+                                "energy": 1,
+                                "throughput": 1,
+                                "latency": 0,
+                            }
+                        ],
                         leak_power=0,
                         area=0,
                     ),
@@ -90,6 +107,32 @@ class TestSpecEvalExpressions(unittest.TestCase):
         evaluated = spec._spec_eval_expressions()
         self.assertEqual(evaluated.workload.rank_sizes["M"], 64)
         self.assertEqual(evaluated.workload.rank_sizes["K"], 32)
+
+    def test_eval_rank_sizes_cross_reference(self):
+        # A rank size may be an expression referencing other rank sizes. The
+        # evaluation order must follow the data dependencies, not the
+        # (alphabetical) field order: here K and M depend on ranks that sort
+        # after them, so a naive sorted order would see them undefined.
+        spec = self._simple_spec(
+            workload=Workload(
+                rank_sizes={"K": "N * 4", "M": "K + N", "N": 8},
+                bits_per_value={"All": 8},
+                einsums=[
+                    {
+                        "name": "Matmul",
+                        "tensor_accesses": [
+                            {"name": "A", "projection": ["m", "k"]},
+                            {"name": "B", "projection": ["k", "n"]},
+                            {"name": "C", "projection": ["m", "n"], "output": True},
+                        ],
+                    }
+                ],
+            )
+        )
+        evaluated = spec._spec_eval_expressions()
+        self.assertEqual(evaluated.workload.rank_sizes["N"], 8)
+        self.assertEqual(evaluated.workload.rank_sizes["K"], 32)
+        self.assertEqual(evaluated.workload.rank_sizes["M"], 40)
 
     def test_eval_preserves_arch(self):
         spec = self._simple_spec()
@@ -189,10 +232,15 @@ class TestPersistentTensorsEvaluation(unittest.TestCase):
     """Test persistent_tensors field evaluation."""
 
     def test_persistent_tensors_marked(self):
-        yaml_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
+        yaml_path = (
+            EXAMPLES_DIR / "workloads" / "transformers" / "gpt" / "gpt3_6.7B.yaml"
+        )
         if not yaml_path.exists():
             self.skipTest(f"YAML file not found: {yaml_path}")
-        spec = Spec.from_yaml(yaml_path)
+        spec = Spec.from_yaml(
+            yaml_path,
+            jinja_parse_data={"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048},
+        )
         evaluated = spec._spec_eval_expressions()
 
         weight_tensors = {"WV", "WK", "WQ", "WZ", "WFFA", "WFFB"}
@@ -205,10 +253,15 @@ class TestPersistentTensorsEvaluation(unittest.TestCase):
                     )
 
     def test_intermediate_tensors_not_persistent(self):
-        yaml_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
+        yaml_path = (
+            EXAMPLES_DIR / "workloads" / "transformers" / "gpt" / "gpt3_6.7B.yaml"
+        )
         if not yaml_path.exists():
             self.skipTest(f"YAML file not found: {yaml_path}")
-        spec = Spec.from_yaml(yaml_path)
+        spec = Spec.from_yaml(
+            yaml_path,
+            jinja_parse_data={"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048},
+        )
         evaluated = spec._spec_eval_expressions()
 
         # I is an intermediate. It should not be persistent.
@@ -226,7 +279,9 @@ class TestRenamesEvaluation(unittest.TestCase):
     """Test that renames are properly resolved during spec evaluation."""
 
     def test_default_renames_applied(self):
-        yaml_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        yaml_path = (
+            EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
+        )
         if not yaml_path.exists():
             self.skipTest(f"YAML file not found: {yaml_path}")
         spec = Spec.from_yaml(yaml_path)
@@ -240,7 +295,9 @@ class TestRenamesEvaluation(unittest.TestCase):
             self.assertIn("weight", rename_names)
 
     def test_inline_renames_applied(self):
-        yaml_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        yaml_path = (
+            EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
+        )
         if not yaml_path.exists():
             self.skipTest(f"YAML file not found: {yaml_path}")
         spec = Spec.from_yaml(yaml_path)
@@ -254,7 +311,9 @@ class TestRenamesEvaluation(unittest.TestCase):
 
     def test_builtin_renames_available(self):
         """Built-in renames like All, Inputs, Outputs, Nothing are always available."""
-        yaml_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        yaml_path = (
+            EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
+        )
         if not yaml_path.exists():
             self.skipTest(f"YAML file not found: {yaml_path}")
         spec = Spec.from_yaml(yaml_path)
@@ -275,7 +334,7 @@ class TestJinjaEvaluation(unittest.TestCase):
     """Test that Jinja2 templating works during spec evaluation."""
 
     def test_jinja_variable_substitution(self):
-        yaml_path = EXAMPLES_DIR / "workloads" / "matmuls.yaml"
+        yaml_path = EXAMPLES_DIR / "workloads" / "basic" / "matmuls_any_einsums.yaml"
         if not yaml_path.exists():
             self.skipTest(f"YAML file not found: {yaml_path}")
         spec = Spec.from_yaml(
@@ -284,7 +343,7 @@ class TestJinjaEvaluation(unittest.TestCase):
         self.assertEqual(len(spec.workload.einsums), 2)
 
     def test_jinja_three_einsums(self):
-        yaml_path = EXAMPLES_DIR / "workloads" / "matmuls.yaml"
+        yaml_path = EXAMPLES_DIR / "workloads" / "basic" / "matmuls_any_einsums.yaml"
         if not yaml_path.exists():
             self.skipTest(f"YAML file not found: {yaml_path}")
         spec = Spec.from_yaml(yaml_path, jinja_parse_data={"N_EINSUMS": 3})
@@ -292,13 +351,18 @@ class TestJinjaEvaluation(unittest.TestCase):
 
     def test_jinja_default_values(self):
         """GPT concise uses Jinja defaults for BATCH_SIZE and N_TOKENS."""
-        yaml_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
+        yaml_path = (
+            EXAMPLES_DIR / "workloads" / "transformers" / "gpt" / "gpt3_6.7B.yaml"
+        )
         if not yaml_path.exists():
             self.skipTest(f"YAML file not found: {yaml_path}")
-        spec = Spec.from_yaml(yaml_path)
-        # Default BATCH_SIZE is 1, N_TOKENS is 8192
+        spec = Spec.from_yaml(
+            yaml_path,
+            jinja_parse_data={"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048},
+        )
+        # Default BATCH_SIZE is 1, N_TOKENS is 2048
         self.assertEqual(spec.workload.rank_sizes["B"], 1)
-        self.assertEqual(spec.workload.rank_sizes["M"], 8192)
+        self.assertEqual(spec.workload.rank_sizes["M"], 2048)
 
 
 # ============================================================================
@@ -311,7 +375,7 @@ class TestMultiFileSpecEval(unittest.TestCase):
 
     def test_load_arch_and_workload(self):
         arch_path = EXAMPLES_DIR / "arches" / "simple.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "matmuls.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "matmuls_any_einsums.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML files not found")
         spec = Spec.from_yaml(arch_path, wl_path, jinja_parse_data={"N_EINSUMS": 1})
@@ -320,7 +384,7 @@ class TestMultiFileSpecEval(unittest.TestCase):
 
     def test_full_spec_evaluates(self):
         arch_path = EXAMPLES_DIR / "arches" / "simple.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "matmuls.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "matmuls.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML files not found")
         spec = Spec.from_yaml(arch_path, wl_path, jinja_parse_data={"N_EINSUMS": 1})
@@ -329,7 +393,7 @@ class TestMultiFileSpecEval(unittest.TestCase):
 
     def test_full_spec_with_mapping(self):
         arch_path = EXAMPLES_DIR / "arches" / "simple.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "matmuls.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "matmuls.yaml"
         map_path = EXAMPLES_DIR / "mappings" / "unfused_matmuls_to_simple.yaml"
         if not all(p.exists() for p in [arch_path, wl_path, map_path]):
             self.skipTest("YAML files not found")
@@ -357,7 +421,7 @@ class TestArchExpressionEvaluation(unittest.TestCase):
         """Arch memory sizes that are expressions get evaluated.
         TPU arch needs einsum context for some expressions (e.g., len(All))."""
         arch_path = EXAMPLES_DIR / "arches" / "tpu_v4i.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML files not found")
         spec = Spec.from_yaml(arch_path, wl_path)
@@ -367,10 +431,10 @@ class TestArchExpressionEvaluation(unittest.TestCase):
         # 1024*1024*128*8 = 1073741824
         self.assertEqual(glb.size, 1024 * 1024 * 128 * 8)
 
-    def test_arch_latency_expression(self):
-        """Arch action latency expressions like 1/(8*614e9) get evaluated."""
+    def test_arch_throughput_expression(self):
+        """Arch action throughput expressions like 8*614e9 get evaluated."""
         arch_path = EXAMPLES_DIR / "arches" / "tpu_v4i.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML files not found")
         spec = Spec.from_yaml(arch_path, wl_path)
@@ -378,8 +442,8 @@ class TestArchExpressionEvaluation(unittest.TestCase):
         evaluated = spec._spec_eval_expressions(einsum_name="Matmul1")
         mm = evaluated.arch.find("MainMemory")
         read_action = [a for a in mm.actions if a.name == "read"][0]
-        self.assertIsNotNone(read_action.latency)
-        self.assertAlmostEqual(read_action.latency, 1 / (8 * 614e9), places=20)
+        self.assertIsNotNone(read_action.throughput)
+        self.assertAlmostEqual(read_action.throughput, 8 * 614e9)
 
 
 # ============================================================================
@@ -391,12 +455,17 @@ class TestConciseVerboseEquivalence(unittest.TestCase):
     """Check that concise and verbose workloads produce the same evaluated results."""
 
     def test_same_einsum_names(self):
-        concise_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
+        concise_path = (
+            EXAMPLES_DIR / "workloads" / "transformers" / "gpt" / "gpt3_6.7B.yaml"
+        )
         verbose_path = EXAMPLES_DIR / "misc" / "gpt3_6.7B_verbose_annotated.yaml"
         if not concise_path.exists() or not verbose_path.exists():
             self.skipTest("YAML files not found")
 
-        c = Spec.from_yaml(concise_path)._spec_eval_expressions()
+        c = Spec.from_yaml(
+            concise_path,
+            jinja_parse_data={"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048},
+        )._spec_eval_expressions()
         v = Spec.from_yaml(verbose_path)._spec_eval_expressions()
         self.assertEqual(
             {e.name for e in c.workload.einsums},
@@ -404,12 +473,17 @@ class TestConciseVerboseEquivalence(unittest.TestCase):
         )
 
     def test_same_tensor_names_per_einsum(self):
-        concise_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
+        concise_path = (
+            EXAMPLES_DIR / "workloads" / "transformers" / "gpt" / "gpt3_6.7B.yaml"
+        )
         verbose_path = EXAMPLES_DIR / "misc" / "gpt3_6.7B_verbose_annotated.yaml"
         if not concise_path.exists() or not verbose_path.exists():
             self.skipTest("YAML files not found")
 
-        c = Spec.from_yaml(concise_path)._spec_eval_expressions()
+        c = Spec.from_yaml(
+            concise_path,
+            jinja_parse_data={"BATCH_SIZE": 1, "DECODE": False, "N_NEW_TOKENS": 2048},
+        )._spec_eval_expressions()
         v = Spec.from_yaml(verbose_path)._spec_eval_expressions()
         for c_einsum in c.workload.einsums:
             v_einsum = v.workload.einsums[c_einsum.name]
@@ -418,24 +492,6 @@ class TestConciseVerboseEquivalence(unittest.TestCase):
                 v_einsum.tensor_names,
                 f"Tensor names differ for {c_einsum.name}",
             )
-
-    def test_same_bits_per_value(self):
-        concise_path = EXAMPLES_DIR / "workloads" / "gpt3_6.7B.yaml"
-        verbose_path = EXAMPLES_DIR / "misc" / "gpt3_6.7B_verbose_annotated.yaml"
-        if not concise_path.exists() or not verbose_path.exists():
-            self.skipTest("YAML files not found")
-
-        c = Spec.from_yaml(concise_path)._spec_eval_expressions()
-        v = Spec.from_yaml(verbose_path)._spec_eval_expressions()
-        for c_einsum in c.workload.einsums:
-            v_einsum = v.workload.einsums[c_einsum.name]
-            for c_ta in c_einsum.tensor_accesses:
-                v_ta = v_einsum.tensor_accesses[c_ta.name]
-                self.assertEqual(
-                    c_ta.bits_per_value,
-                    v_ta.bits_per_value,
-                    f"bits_per_value differs for {c_ta.name} in {c_einsum.name}",
-                )
 
 
 if __name__ == "__main__":

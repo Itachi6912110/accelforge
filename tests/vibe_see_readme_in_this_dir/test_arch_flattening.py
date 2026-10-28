@@ -23,6 +23,7 @@ from accelforge.frontend.arch import (
     Toll,
     Leaf,
     Branch,
+    FlattenedArch,
 )
 from accelforge.frontend.workload import Workload
 
@@ -38,8 +39,18 @@ def _simple_arch():
                 name="MainMemory",
                 size=1_000_000,
                 actions=[
-                    {"name": "read", "energy": 1, "latency": 0},
-                    {"name": "write", "energy": 1, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
@@ -48,15 +59,27 @@ def _simple_arch():
                 name="GlobalBuffer",
                 size=100_000,
                 actions=[
-                    {"name": "read", "energy": 0.5, "latency": 0},
-                    {"name": "write", "energy": 0.5, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 0.5,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 0.5,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
             ),
             Compute(
                 name="MAC",
-                actions=[{"name": "compute", "energy": 1, "latency": 1}],
+                actions=[
+                    {"name": "compute", "energy": 1, "throughput": 1, "latency": 0}
+                ],
                 leak_power=0,
                 area=0,
             ),
@@ -90,8 +113,18 @@ def _fork_arch():
                 name="MainMemory",
                 size=1_000_000,
                 actions=[
-                    {"name": "read", "energy": 1, "latency": 0},
-                    {"name": "write", "energy": 1, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
@@ -100,8 +133,18 @@ def _fork_arch():
                 name="GlobalBuffer",
                 size=100_000,
                 actions=[
-                    {"name": "read", "energy": 0.5, "latency": 0},
-                    {"name": "write", "energy": 0.5, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 0.5,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 0.5,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
@@ -110,7 +153,14 @@ def _fork_arch():
                 nodes=[
                     Compute(
                         name="ScalarUnit",
-                        actions=[{"name": "compute", "energy": 0, "latency": 1}],
+                        actions=[
+                            {
+                                "name": "compute",
+                                "energy": 0,
+                                "throughput": 1,
+                                "latency": 0,
+                            }
+                        ],
                         leak_power=0,
                         area=0,
                     ),
@@ -129,15 +179,27 @@ def _fork_arch():
                 name="Register",
                 size=8,
                 actions=[
-                    {"name": "read", "energy": 0, "latency": 0},
-                    {"name": "write", "energy": 0, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 0,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 0,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
             ),
             Compute(
                 name="MAC",
-                actions=[{"name": "compute", "energy": 1, "latency": 1}],
+                actions=[
+                    {"name": "compute", "energy": 1, "throughput": 1, "latency": 0}
+                ],
                 leak_power=0,
                 area=0,
             ),
@@ -321,7 +383,7 @@ class TestSpecGetFlattenedArchitecture(unittest.TestCase):
         spec = self._make_spec()
         result = spec._get_flattened_architecture(compute_node="MAC")
         # Returns a single path (flat list of Leaf nodes), not list of lists
-        self.assertIsInstance(result, list)
+        self.assertIsInstance(result, FlattenedArch)
         self.assertIsInstance(result[-1], Leaf)
         self.assertEqual(result[-1].name, "MAC")
 
@@ -346,7 +408,7 @@ class TestSpecGetFlattenedArchitecture(unittest.TestCase):
         spec = self._make_spec(arch=_fork_arch())
         result = spec._get_flattened_architecture(compute_node="MAC")
         # Returns a single path, not list of lists
-        self.assertIsInstance(result, list)
+        self.assertIsInstance(result, FlattenedArch)
         self.assertIsInstance(result[-1], Leaf)
         self.assertEqual(result[-1].name, "MAC")
 
@@ -359,7 +421,7 @@ class TestSpecGetFlattenedArchitecture(unittest.TestCase):
 class TestFlattenFromYAML(unittest.TestCase):
     def test_simple_arch_flatten(self):
         arch_path = EXAMPLES_DIR / "arches" / "simple.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "matmuls.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "matmuls_any_einsums.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML files not found")
         spec = Spec.from_yaml(arch_path, wl_path, jinja_parse_data={"N_EINSUMS": 1})
@@ -372,7 +434,7 @@ class TestFlattenFromYAML(unittest.TestCase):
     def test_tpu_arch_flatten(self):
         """TPU arch requires einsum context for expressions like len(All) == 2."""
         arch_path = EXAMPLES_DIR / "arches" / "tpu_v4i.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML files not found")
         spec = Spec.from_yaml(arch_path, wl_path)
@@ -384,7 +446,7 @@ class TestFlattenFromYAML(unittest.TestCase):
 
     def test_tpu_mac_path_includes_register(self):
         arch_path = EXAMPLES_DIR / "arches" / "tpu_v4i.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML files not found")
         spec = Spec.from_yaml(arch_path, wl_path)
@@ -397,7 +459,7 @@ class TestFlattenFromYAML(unittest.TestCase):
 
     def test_tpu_scalar_path_excludes_register(self):
         arch_path = EXAMPLES_DIR / "arches" / "tpu_v4i.yaml"
-        wl_path = EXAMPLES_DIR / "workloads" / "three_matmuls_annotated.yaml"
+        wl_path = EXAMPLES_DIR / "workloads" / "basic" / "three_matmuls_annotated.yaml"
         if not arch_path.exists() or not wl_path.exists():
             self.skipTest("YAML files not found")
         spec = Spec.from_yaml(arch_path, wl_path)
@@ -425,8 +487,18 @@ class TestDuplicateNameDetection(unittest.TestCase):
                         name="Mem",
                         size=100,
                         actions=[
-                            {"name": "read", "energy": 1, "latency": 0},
-                            {"name": "write", "energy": 1, "latency": 0},
+                            {
+                                "name": "read",
+                                "energy": 1,
+                                "throughput": float("inf"),
+                                "latency": 0,
+                            },
+                            {
+                                "name": "write",
+                                "energy": 1,
+                                "throughput": float("inf"),
+                                "latency": 0,
+                            },
                         ],
                         leak_power=0,
                         area=0,
@@ -435,15 +507,32 @@ class TestDuplicateNameDetection(unittest.TestCase):
                         name="Mem",
                         size=200,
                         actions=[
-                            {"name": "read", "energy": 1, "latency": 0},
-                            {"name": "write", "energy": 1, "latency": 0},
+                            {
+                                "name": "read",
+                                "energy": 1,
+                                "throughput": float("inf"),
+                                "latency": 0,
+                            },
+                            {
+                                "name": "write",
+                                "energy": 1,
+                                "throughput": float("inf"),
+                                "latency": 0,
+                            },
                         ],
                         leak_power=0,
                         area=0,
                     ),
                     Compute(
                         name="MAC",
-                        actions=[{"name": "compute", "energy": 1, "latency": 1}],
+                        actions=[
+                            {
+                                "name": "compute",
+                                "energy": 1,
+                                "throughput": 1,
+                                "latency": 0,
+                            }
+                        ],
                         leak_power=0,
                         area=0,
                     ),
@@ -517,8 +606,18 @@ def _spatial_arch():
                 name="MainMemory",
                 size=1_000_000,
                 actions=[
-                    {"name": "read", "energy": 1, "latency": 0},
-                    {"name": "write", "energy": 1, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
@@ -531,15 +630,27 @@ def _spatial_arch():
                 name="Register",
                 size=8,
                 actions=[
-                    {"name": "read", "energy": 0, "latency": 0},
-                    {"name": "write", "energy": 0, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 0,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 0,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
             ),
             Compute(
                 name="MAC",
-                actions=[{"name": "compute", "energy": 1, "latency": 1}],
+                actions=[
+                    {"name": "compute", "energy": 1, "throughput": 1, "latency": 0}
+                ],
                 leak_power=0,
                 area=0,
             ),
@@ -555,8 +666,18 @@ def _multi_spatial_arch():
                 name="MainMemory",
                 size=1_000_000,
                 actions=[
-                    {"name": "read", "energy": 1, "latency": 0},
-                    {"name": "write", "energy": 1, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
@@ -569,8 +690,18 @@ def _multi_spatial_arch():
                 name="Register",
                 size=8,
                 actions=[
-                    {"name": "read", "energy": 0, "latency": 0},
-                    {"name": "write", "energy": 0, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 0,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 0,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 spatial=[{"name": "Y", "fanout": 8}],
                 leak_power=0,
@@ -578,7 +709,9 @@ def _multi_spatial_arch():
             ),
             Compute(
                 name="MAC",
-                actions=[{"name": "compute", "energy": 1, "latency": 1}],
+                actions=[
+                    {"name": "compute", "energy": 1, "throughput": 1, "latency": 0}
+                ],
                 leak_power=0,
                 area=0,
             ),
@@ -594,8 +727,18 @@ def _duplicate_spatial_arch():
                 name="MainMemory",
                 size=1_000_000,
                 actions=[
-                    {"name": "read", "energy": 1, "latency": 0},
-                    {"name": "write", "energy": 1, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
@@ -610,7 +753,9 @@ def _duplicate_spatial_arch():
             ),
             Compute(
                 name="MAC",
-                actions=[{"name": "compute", "energy": 1, "latency": 1}],
+                actions=[
+                    {"name": "compute", "energy": 1, "throughput": 1, "latency": 0}
+                ],
                 leak_power=0,
                 area=0,
             ),
@@ -626,8 +771,18 @@ def _array_spatial_arch():
                 name="MainMemory",
                 size=1_000_000,
                 actions=[
-                    {"name": "read", "energy": 1, "latency": 0},
-                    {"name": "write", "energy": 1, "latency": 0},
+                    {
+                        "name": "read",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
+                    {
+                        "name": "write",
+                        "energy": 1,
+                        "throughput": float("inf"),
+                        "latency": 0,
+                    },
                 ],
                 leak_power=0,
                 area=0,
@@ -640,15 +795,32 @@ def _array_spatial_arch():
                         name="Register",
                         size=8,
                         actions=[
-                            {"name": "read", "energy": 0, "latency": 0},
-                            {"name": "write", "energy": 0, "latency": 0},
+                            {
+                                "name": "read",
+                                "energy": 0,
+                                "throughput": float("inf"),
+                                "latency": 0,
+                            },
+                            {
+                                "name": "write",
+                                "energy": 0,
+                                "throughput": float("inf"),
+                                "latency": 0,
+                            },
                         ],
                         leak_power=0,
                         area=0,
                     ),
                     Compute(
                         name="MAC",
-                        actions=[{"name": "compute", "energy": 1, "latency": 1}],
+                        actions=[
+                            {
+                                "name": "compute",
+                                "energy": 1,
+                                "throughput": 1,
+                                "latency": 0,
+                            }
+                        ],
                         leak_power=0,
                         area=0,
                     ),
