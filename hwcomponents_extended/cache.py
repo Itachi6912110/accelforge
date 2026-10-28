@@ -13,6 +13,31 @@ import math
 from hwcomponents import ComponentModel, action
 from hwcomponents_cacti.hwcomponents_cacti import SRAM
 
+try:  # hwcomponents >= ~1.0.100: @action functions take and return ActionCost
+    from hwcomponents.model import ActionCost
+except ImportError:  # older hwcomponents: (energy, latency) tuples
+    ActionCost = None
+
+
+def _unpack(cost) -> tuple[float, float, float]:
+    """(energy, latency, throughput) of a sub-array action, for either API."""
+    if ActionCost is not None and isinstance(cost, ActionCost):
+        return cost.energy, cost.latency, cost.throughput
+    energy, latency = cost
+    return energy, latency, float("inf")
+
+
+def _pack(energy: float, latency: float, throughput: float):
+    if ActionCost is None:
+        return energy, latency
+    return ActionCost(energy=energy, latency=latency, throughput=throughput)
+
+
+def _mix_throughput(hit_rate: float, tp_hit: float, tp_miss: float) -> float:
+    """Throughput of a hit_rate mix of hit/miss accesses (harmonic in time)."""
+    time_per_access = hit_rate / tp_hit + (1 - hit_rate) / tp_miss
+    return 1 / time_per_access if time_per_access > 0 else float("inf")
+
 
 class SimpleSRAMCache(ComponentModel):
     """
@@ -110,10 +135,10 @@ class SimpleSRAMCache(ComponentModel):
         (energy_J, latency_s) : tuple[float, float]
             Energy in Joules, latency in seconds (tag and data accessed in parallel).
         """
-        tag_rd_e, tag_rd_lat = self._tag_array.read()
-        tag_wr_e, tag_wr_lat = self._tag_array.write()
-        data_rd_e, data_rd_lat = self._data_array.read()
-        data_wr_e, data_wr_lat = self._data_array.write()
+        tag_rd_e, tag_rd_lat, tag_rd_tp = _unpack(self._tag_array.read())
+        tag_wr_e, tag_wr_lat, tag_wr_tp = _unpack(self._tag_array.write())
+        data_rd_e, data_rd_lat, data_rd_tp = _unpack(self._data_array.read())
+        data_wr_e, data_wr_lat, data_wr_tp = _unpack(self._data_array.write())
 
         energy_hit = tag_rd_e * self.associativity + data_rd_e
         energy_miss = tag_rd_e * self.associativity + tag_wr_e + data_wr_e + data_rd_e
@@ -123,7 +148,12 @@ class SimpleSRAMCache(ComponentModel):
 
         energy = energy_hit * self.hit_rate + energy_miss * (1-self.hit_rate)
         latency = latency_hit * self.hit_rate + latency_miss * (1-self.hit_rate)
-        return energy, latency
+        throughput = _mix_throughput(
+            self.hit_rate,
+            min(tag_rd_tp, data_rd_tp),
+            min(tag_rd_tp, tag_wr_tp, data_wr_tp, data_rd_tp),
+        )
+        return _pack(energy, latency, throughput)
 
     @action
     def write(self) -> tuple[float, float]:
@@ -139,10 +169,10 @@ class SimpleSRAMCache(ComponentModel):
         -------
         (energy_J, latency_s) : tuple[float, float]
         """
-        tag_rd_e, tag_rd_lat = self._tag_array.read()
-        tag_wr_e, tag_wr_lat = self._tag_array.write()
-        data_rd_e, data_rd_lat = self._data_array.read()
-        data_wr_e, data_wr_lat = self._data_array.write()
+        tag_rd_e, tag_rd_lat, tag_rd_tp = _unpack(self._tag_array.read())
+        tag_wr_e, tag_wr_lat, tag_wr_tp = _unpack(self._tag_array.write())
+        data_rd_e, data_rd_lat, data_rd_tp = _unpack(self._data_array.read())
+        data_wr_e, data_wr_lat, data_wr_tp = _unpack(self._data_array.write())
 
         energy_hit = tag_rd_e + data_wr_e
         energy_miss = tag_rd_e + data_rd_e + tag_wr_e + data_wr_e
@@ -152,5 +182,10 @@ class SimpleSRAMCache(ComponentModel):
 
         energy = energy_hit * self.hit_rate + energy_miss * (1-self.hit_rate)
         latency = latency_hit * self.hit_rate + latency_miss * (1-self.hit_rate)
+        throughput = _mix_throughput(
+            self.hit_rate,
+            min(tag_rd_tp, data_wr_tp),
+            min(tag_rd_tp, data_rd_tp, tag_wr_tp, data_wr_tp),
+        )
 
-        return energy, latency
+        return _pack(energy, latency, throughput)
