@@ -1,0 +1,93 @@
+# AccelForge FFM mapper (metric: energy), dense render, scene garden
+# arch: 3dgs_examples/arches/3dgs_render.yaml with GlobalBufferBytes=262144
+# workload: 3dgs_examples/workloads/dense/render/garden.yaml
+# energy 6880.66 J, latency 60774.4 s, DRAM 279.179 GB
+mapping:
+  nodes:
+  - !Storage
+    tensors: [G2D, I, F2D]
+    component: DRAM
+  - !Reservation
+    purposes: [G2D, I, F2D]
+    resource: DRAM
+  - !Temporal
+    rank_variable: pv
+    tile_shape: 24
+  - !Temporal
+    rank_variable: v
+    tile_shape: 1
+  - !Storage
+    tensors: [I]
+    component: GlobalBuffer
+  - !Reservation
+    purposes: [I]
+    resource: GlobalBuffer
+  - !Temporal
+    rank_variable: g
+    tile_shape: 14
+  - !Storage
+    tensors: [G2D, F2D]
+    component: GlobalBuffer
+  - !Reservation
+    purposes: [G2D, F2D]
+    resource: GlobalBuffer
+  - !Temporal
+    rank_variable: pu
+    tile_shape: 2
+  - !Storage
+    tensors: [Alpha]
+    component: GlobalBuffer
+  - !Sequential
+    nodes:
+    - !Nested
+      nodes:
+      - !Reservation
+        purposes: [Alpha]
+        resource: GlobalBuffer
+      - !Temporal
+        rank_variable: g
+        tile_shape: 2
+      - !Spatial
+        rank_variable: g
+        tile_shape: 1
+        name: X
+        component: ComputeAlphaArray
+      - !Spatial
+        rank_variable: pu
+        tile_shape: 1
+        name: X
+        component: ComputeAlphaArray
+      - !Spatial
+        rank_variable: pv
+        tile_shape: 1
+        name: X
+        component: ComputeAlphaArray
+      - !Compute
+        einsum: ComputeAlpha
+        component: ComputeAlphaUnit
+    - !Nested
+      nodes:
+      - !Reservation
+        purposes: [Alpha]
+        resource: GlobalBuffer
+      - !Temporal
+        rank_variable: pv
+        tile_shape: 8
+      - !Spatial
+        rank_variable: g
+        tile_shape: 1
+        name: X
+        component: ComputeBlendArray
+      - !Spatial
+        rank_variable: pu
+        tile_shape: 1
+        name: X
+        component: ComputeBlendArray
+      - !Spatial
+        rank_variable: pv
+        tile_shape: 1
+        name: X
+        component: ComputeBlendArray
+      - !Compute
+        einsum: ComputeBlend
+        component: ComputeBlendUnit

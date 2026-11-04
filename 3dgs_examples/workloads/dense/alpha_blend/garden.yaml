@@ -1,0 +1,36 @@
+# 3DGS render, alpha blend, DENSE association (3DGSArchSpace.pptx p.2):
+#
+#   I[v, pu, pv] = ComputeBlend(f2D[v, g], alpha[v, g, pu, pv])     (reduce over g)
+#
+# Blend simplification 1: g is already sorted near-to-far within each view, so
+# reducing g from small to large index resolves the depth dependency. The
+# transmittance recurrence is carried in the per-pixel accumulator I (RGB + T), so
+# the data movement is that of a reduction over g into I[v, pu, pv].
+# Blend assumption 1 (relaxed for simplicity): g order is the same across views.
+#
+# Dense: every (v, g, pu, pv) point is blended. alpha is a workload input here
+# (read from DRAM, unfused); see ../render/garden.yaml for the fused cascade.
+#
+# Garden defaults: Nv = 185, Ng = 1,041,334, 622 x 960 pixels (see alpha_compute).
+{% set Nv = Nv | default(185) %}
+{% set Ng = Ng | default(1041334) %}
+{% set NpRow = NpRow | default(622) %}
+{% set NpCol = NpCol | default(960) %}
+{% set AlphaBits = AlphaBits | default(32) %}
+
+workload:
+  iteration_space_shape:
+    v: 0 <= v < {{Nv}}
+    g: 0 <= g < {{Ng}}
+    pu: 0 <= pu < {{NpRow}}
+    pv: 0 <= pv < {{NpCol}}
+
+  einsums:
+  - name: ComputeBlend
+    tags: [compute_blend]
+    tensor_accesses:
+    - {name: Alpha, projection: [v, g, pu, pv], bits_per_value: {{AlphaBits}}}
+    # view-dependent color of Gaussian g at view v (SH already evaluated), RGB fp32
+    - {name: F2D, projection: [v, g], bits_per_value: 96}
+    # rendered pixel: RGB + transmittance accumulator, fp32
+    - {name: I, projection: [v, pu, pv], output: True, bits_per_value: 128}

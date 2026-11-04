@@ -1,0 +1,35 @@
+# 3DGS render = alpha compute -> alpha blend as one Einsum cascade, DENSE association
+# (3DGSArchSpace.pptx p.2). alpha is an intermediate, so the mapper may fuse the two
+# stages and keep alpha on chip (the arch's DRAM keeps only ~Intermediates).
+#
+#   alpha[v, g, pu, pv] = ComputeAlpha(G2D[v, g], pu, pv)
+#   I[v, pu, pv]        = ComputeBlend(F2D[v, g], alpha[v, g, pu, pv])   (reduce over g)
+#
+# Same assumptions and garden defaults as ../alpha_compute/garden.yaml and
+# ../alpha_blend/garden.yaml.
+{% set Nv = Nv | default(185) %}
+{% set Ng = Ng | default(1041334) %}
+{% set NpRow = NpRow | default(622) %}
+{% set NpCol = NpCol | default(960) %}
+{% set AlphaBits = AlphaBits | default(32) %}
+
+workload:
+  iteration_space_shape:
+    v: 0 <= v < {{Nv}}
+    g: 0 <= g < {{Ng}}
+    pu: 0 <= pu < {{NpRow}}
+    pv: 0 <= pv < {{NpCol}}
+
+  einsums:
+  - name: ComputeAlpha
+    tags: [compute_alpha]
+    tensor_accesses:
+    - {name: G2D, projection: [v, g], bits_per_value: 192}
+    - {name: Alpha, projection: [v, g, pu, pv], output: True, bits_per_value: {{AlphaBits}}}
+
+  - name: ComputeBlend
+    tags: [compute_blend]
+    tensor_accesses:
+    - {name: Alpha, projection: [v, g, pu, pv], bits_per_value: {{AlphaBits}}}
+    - {name: F2D, projection: [v, g], bits_per_value: 96}
+    - {name: I, projection: [v, pu, pv], output: True, bits_per_value: 128}

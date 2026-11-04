@@ -1,0 +1,37 @@
+# 3DGS render, alpha compute, DENSE association (3DGSArchSpace.pptx p.2):
+#
+#   alpha[v, g, pu, pv] = ComputeAlpha(G2D[v, g], pu, pv)
+#
+#   v  in [0, Nv)       views to render
+#   g  in [0, Ng)       Gaussian index, near-to-far at view v
+#   pu in [0, Np_row)   pixel row,  pv in [0, Np_col) pixel column
+#
+# Dense: every Gaussian is associated with every pixel of every view (the
+# association matrix is all ones), so the iteration space is the full box
+# Nv x Ng x Np_row x Np_col. Pixel coordinates are generated from the loop counters
+# (pu, pv appear only in the output). alpha is a workload output here, i.e. it is
+# written to DRAM (unfused); see ../render/garden.yaml for the fused cascade.
+#
+# Garden defaults (MipNeRF360 garden, on-the-fly-nvs anchor recorded in
+# benchmarks/workload/garden/frame_00000 of 3DGS-Arch-Evaluation):
+#   Nv = 185 views (all images), Ng = 1,041,334 Gaussians, 622 x 960 pixels.
+{% set Nv = Nv | default(185) %}
+{% set Ng = Ng | default(1041334) %}
+{% set NpRow = NpRow | default(622) %}
+{% set NpCol = NpCol | default(960) %}
+{% set AlphaBits = AlphaBits | default(32) %}
+
+workload:
+  iteration_space_shape:
+    v: 0 <= v < {{Nv}}
+    g: 0 <= g < {{Ng}}
+    pu: 0 <= pu < {{NpRow}}
+    pv: 0 <= pv < {{NpCol}}
+
+  einsums:
+  - name: ComputeAlpha
+    tags: [compute_alpha]
+    tensor_accesses:
+    # projected 2D Gaussian of view v: mean2D (2) + conic (3) + opacity (1), fp32
+    - {name: G2D, projection: [v, g], bits_per_value: 192}
+    - {name: Alpha, projection: [v, g, pu, pv], output: True, bits_per_value: {{AlphaBits}}}

@@ -1,0 +1,81 @@
+# 3DGS render architecture (3DGSArchSpace.pptx p.3):
+#
+#   External Memory (DRAM) -> Global Buffer (SRAM) -> { ComputeAlpha unit | ComputeBlend unit }
+#
+# Memory constraints: size of each memory, which tensors it may keep.
+#   DRAM keeps every non-intermediate tensor (keep: ~Intermediates), so in the fused
+#   cascade alpha may live only in the Global Buffer.
+#   GlobalBuffer keeps whatever DRAM does not and may keep anything (size: knob).
+# Compute constraints: spatial dimension (number of units) and which Einsum (hence
+#   which input/output tensors) each unit runs: `enabled:` pins ComputeAlpha (2 tensors)
+#   to the alpha unit and ComputeBlend (3 tensors) to the blend unit. (Tag names would be
+#   cleaner but fail to evaluate in a workload that lacks the other Einsum.)
+#
+# Costs come from hwcomponents models:
+#   DRAM         LPDDR4 (hwcomponents_cacti, flat J/bit), 64-bit bursts
+#   GlobalBuffer CACTI SRAM, 256-bit port (an SRAM, not a cache: AccelForge places data
+#                explicitly; swap component_class to SimpleSRAMCache for cache-style
+#                per-access energy, registering it with spec.config.add_component_models)
+#   Compute      Aladdin IntMAC (32-bit, FP32 approximated as INT32); one alpha eval
+#                ~12 MAC-equivalents (quadratic form + exp polynomial + opacity), one
+#                blend step ~6 (alpha*T, RGB accumulate, T update, threshold compare)
+{% set GlobalBufferBytes = GlobalBufferBytes | default(262144) %}
+{% set TechNode = TechNode | default(16e-9) %}
+{% set AlphaUnits = AlphaUnits | default(256) %}
+{% set BlendUnits = BlendUnits | default(256) %}
+
+arch:
+  nodes:
+  - !Memory
+    name: DRAM
+    component_class: LPDDR4
+    size: inf
+    area: 0
+    tensors: {keep: ~Intermediates, may_keep: All}
+    extra_attributes_for_component_model: {width: 64}
+    actions:
+    - {name: read, bits_per_action: 64}
+    - {name: write, bits_per_action: 64}
+
+  - !Memory
+    name: GlobalBuffer
+    component_class: SRAM
+    size: {{GlobalBufferBytes * 8}}
+    tensors: {keep: ~DRAM, may_keep: All}
+    extra_attributes_for_component_model:
+      tech_node: {{TechNode}}
+      width: 256
+    actions:
+    - {name: read, bits_per_action: 256}
+    - {name: write, bits_per_action: 256}
+
+  - !Fork
+    nodes:
+    - !Container
+      name: ComputeAlphaArray
+      spatial: [{name: X, fanout: {{AlphaUnits}}}]
+    - !Compute
+      name: ComputeAlphaUnit
+      component_class: IntMAC
+      enabled: len(All) == 2           # ComputeAlpha: G2D -> Alpha
+      extra_attributes_for_component_model:
+        tech_node: {{TechNode}}
+        multiplier_width: 32
+        adder_width: 32
+      actions:
+      - {name: compute, energy_scale: 12}
+
+  - !Container
+    name: ComputeBlendArray
+    spatial: [{name: X, fanout: {{BlendUnits}}}]
+
+  - !Compute
+    name: ComputeBlendUnit
+    component_class: IntMAC
+    enabled: len(All) == 3             # ComputeBlend: Alpha, F2D -> I
+    extra_attributes_for_component_model:
+      tech_node: {{TechNode}}
+      multiplier_width: 32
+      adder_width: 32
+    actions:
+    - {name: compute, energy_scale: 6}

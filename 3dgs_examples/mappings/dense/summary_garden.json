@@ -1,0 +1,314 @@
+{
+  "alpha_compute": [
+    {
+      "glb_bytes": 65536,
+      "n_computes": 115033251244800,
+      "energy_J": 42257.17241175913,
+      "energy_per_component_J": {
+        "DRAM": 29448.80822413824,
+        "GlobalBuffer": 11.288911819458008,
+        "ComputeAlphaUnit": 8175.33552961839,
+        "ComputeBlendUnit": 4621.73974609375
+      },
+      "latency_s": 1097053.595786476,
+      "dram_bytes": 460137628502160.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 460133004979200.0,
+          "compulsory_dram_bytes": 460133004979200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        },
+        "G2D": {
+          "dram_bytes": 4623522960.0,
+          "compulsory_dram_bytes": 4623522960.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 0.9
+    },
+    {
+      "glb_bytes": 262144,
+      "n_computes": 115033251244800,
+      "energy_J": 42281.00912391683,
+      "energy_per_component_J": {
+        "DRAM": 29448.80822413824,
+        "GlobalBuffer": 35.12562561035156,
+        "ComputeAlphaUnit": 8175.33552961839,
+        "ComputeBlendUnit": 4621.73974609375
+      },
+      "latency_s": 1097053.595786476,
+      "dram_bytes": 460137628502160.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 460133004979200.0,
+          "compulsory_dram_bytes": 460133004979200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        },
+        "G2D": {
+          "dram_bytes": 4623522960.0,
+          "compulsory_dram_bytes": 4623522960.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 0.7
+    },
+    {
+      "glb_bytes": 1048576,
+      "n_computes": 115033251244800,
+      "energy_J": 42366.84740657485,
+      "energy_per_component_J": {
+        "DRAM": 29448.80822413824,
+        "GlobalBuffer": 120.96390533447266,
+        "ComputeAlphaUnit": 8175.33552961839,
+        "ComputeBlendUnit": 4621.73974609375
+      },
+      "latency_s": 1097053.595786476,
+      "dram_bytes": 460137628502160.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 460133004979200.0,
+          "compulsory_dram_bytes": 460133004979200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        },
+        "G2D": {
+          "dram_bytes": 4623522960.0,
+          "compulsory_dram_bytes": 4623522960.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 1.1
+    }
+  ],
+  "alpha_blend": [
+    {
+      "glb_bytes": 65536,
+      "n_computes": 115033251244800,
+      "energy_J": 40646.95484587272,
+      "energy_per_component_J": {
+        "DRAM": 29472.297874749445,
+        "GlobalBuffer": 147.0065460205078,
+        "ComputeBlendUnit": 6402.22416129357,
+        "ComputeAlphaUnit": 4625.42626953125
+      },
+      "latency_s": 1097928.625,
+      "dram_bytes": 460504654291200.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 460133004979200.0,
+          "compulsory_dram_bytes": 460133004979200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        },
+        "F2D": {
+          "dram_bytes": 369881836800.0,
+          "compulsory_dram_bytes": 2311761480.0,
+          "refetch_factor": 160.0,
+          "intermediate": false
+        },
+        "I": {
+          "dram_bytes": 1767475200.0,
+          "compulsory_dram_bytes": 1767475200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 1.1
+    },
+    {
+      "glb_bytes": 262144,
+      "n_computes": 115033251244800,
+      "energy_J": 40772.451877203785,
+      "energy_per_component_J": {
+        "DRAM": 29454.54354649856,
+        "GlobalBuffer": 295.83013916015625,
+        "ComputeBlendUnit": 6399.43802848107,
+        "ComputeAlphaUnit": 4622.64013671875
+      },
+      "latency_s": 1097267.25,
+      "dram_bytes": 460227242913600.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 460133004979200.0,
+          "compulsory_dram_bytes": 460133004979200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        },
+        "F2D": {
+          "dram_bytes": 92470459200.0,
+          "compulsory_dram_bytes": 2311761480.0,
+          "refetch_factor": 40.0,
+          "intermediate": false
+        },
+        "I": {
+          "dram_bytes": 1767475200.0,
+          "compulsory_dram_bytes": 1767475200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 0.8
+    },
+    {
+      "glb_bytes": 1048576,
+      "n_computes": 115033251244800,
+      "energy_J": 41143.307766557686,
+      "energy_per_component_J": {
+        "DRAM": 29450.10496443584,
+        "GlobalBuffer": 672.5181884765625,
+        "ComputeBlendUnit": 6398.74125113732,
+        "ComputeAlphaUnit": 4621.943359375
+      },
+      "latency_s": 1097101.875,
+      "dram_bytes": 460157890069200.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 460133004979200.0,
+          "compulsory_dram_bytes": 460133004979200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        },
+        "F2D": {
+          "dram_bytes": 23117614800.0,
+          "compulsory_dram_bytes": 2311761480.0,
+          "refetch_factor": 10.0,
+          "intermediate": false
+        },
+        "I": {
+          "dram_bytes": 1767475200.0,
+          "compulsory_dram_bytes": 1767475200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 0.3
+    }
+  ],
+  "render": [
+    {
+      "glb_bytes": 65536,
+      "n_computes": 230066502489600,
+      "energy_J": 6183.349826223952,
+      "energy_per_component_J": {
+        "GlobalBuffer": 477.4528080674049,
+        "DRAM": 138.1530239608957,
+        "ComputeAlphaUnit": 3672.2709429789857,
+        "ComputeBlendUnit": 1895.4730512166657
+      },
+      "latency_s": 28169.6953125,
+      "dram_bytes": 2158640936040.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 0.0,
+          "compulsory_dram_bytes": 0.0,
+          "refetch_factor": null,
+          "intermediate": true
+        },
+        "G2D": {
+          "dram_bytes": 1437915640560.0,
+          "compulsory_dram_bytes": 4623522960.0,
+          "refetch_factor": 311.0,
+          "intermediate": false
+        },
+        "F2D": {
+          "dram_bytes": 718957820280.0,
+          "compulsory_dram_bytes": 2311761480.0,
+          "refetch_factor": 311.0,
+          "intermediate": false
+        },
+        "I": {
+          "dram_bytes": 1767475200.0,
+          "compulsory_dram_bytes": 1767475200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 1.1
+    },
+    {
+      "glb_bytes": 262144,
+      "n_computes": 230066502489600,
+      "energy_J": 6880.664486196596,
+      "energy_per_component_J": {
+        "GlobalBuffer": 1020.334547107279,
+        "DRAM": 17.86744666368501,
+        "ComputeAlphaUnit": 3809.630192093976,
+        "ComputeBlendUnit": 2032.832300331656
+      },
+      "latency_s": 60774.3984375,
+      "dram_bytes": 279178852800.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 0.0,
+          "compulsory_dram_bytes": 0.0,
+          "refetch_factor": null,
+          "intermediate": true
+        },
+        "G2D": {
+          "dram_bytes": 184940918400.0,
+          "compulsory_dram_bytes": 4623522960.0,
+          "refetch_factor": 40.0,
+          "intermediate": false
+        },
+        "F2D": {
+          "dram_bytes": 92470459200.0,
+          "compulsory_dram_bytes": 2311761480.0,
+          "refetch_factor": 40.0,
+          "intermediate": false
+        },
+        "I": {
+          "dram_bytes": 1767475200.0,
+          "compulsory_dram_bytes": 1767475200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 1.1
+    },
+    {
+      "glb_bytes": 1048576,
+      "n_computes": 230066502489600,
+      "energy_J": 7970.0531566080645,
+      "energy_per_component_J": {
+        "GlobalBuffer": 2089.9106830672636,
+        "DRAM": 4.551700475521252,
+        "ComputeAlphaUnit": 3826.1943324138,
+        "ComputeBlendUnit": 2049.39644065148
+      },
+      "latency_s": 64706.19921875,
+      "dram_bytes": 71120319600.0,
+      "tensors": {
+        "Alpha": {
+          "dram_bytes": 0.0,
+          "compulsory_dram_bytes": 0.0,
+          "refetch_factor": null,
+          "intermediate": true
+        },
+        "G2D": {
+          "dram_bytes": 46235229600.0,
+          "compulsory_dram_bytes": 4623522960.0,
+          "refetch_factor": 10.0,
+          "intermediate": false
+        },
+        "F2D": {
+          "dram_bytes": 23117614800.0,
+          "compulsory_dram_bytes": 2311761480.0,
+          "refetch_factor": 10.0,
+          "intermediate": false
+        },
+        "I": {
+          "dram_bytes": 1767475200.0,
+          "compulsory_dram_bytes": 1767475200.0,
+          "refetch_factor": 1.0,
+          "intermediate": false
+        }
+      },
+      "mapper_s": 1.1
+    }
+  ]
+}
