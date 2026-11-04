@@ -36,6 +36,10 @@ _sweep = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_sweep)
 mapping_to_yaml = _sweep.mapping_to_yaml
 
+# One scratch cwd for the whole run: joblib's reused workers inherit the cwd of the
+# first mapper call, so a per-call TemporaryDirectory leaves them in a deleted dir.
+_SCRATCH = tempfile.TemporaryDirectory()
+
 
 def map_point(workload: Path, glb_bytes: int, imperfect: bool):
     spec = af.Spec.from_yaml(ARCH, workload, jinja_parse_data={"GlobalBufferBytes": glb_bytes})
@@ -44,14 +48,13 @@ def map_point(workload: Path, glb_bytes: int, imperfect: bool):
         spec.mapper.explore_imperfect_temporal_loops = True
         spec.mapper.explore_imperfect_spatial_loops = True
     cwd = os.getcwd()
-    with tempfile.TemporaryDirectory() as tmp:
-        os.chdir(tmp)  # the mapper writes a debug mapping.svg into the cwd
-        try:
-            t0 = time.perf_counter()
-            m = spec.map_workload_to_arch()
-            mapper_s = time.perf_counter() - t0
-        finally:
-            os.chdir(cwd)
+    os.chdir(_SCRATCH.name)  # the mapper writes a debug mapping.svg into the cwd
+    try:
+        t0 = time.perf_counter()
+        m = spec.map_workload_to_arch()
+        mapper_s = time.perf_counter() - t0
+    finally:
+        os.chdir(cwd)
 
     sizes = {}  # bits, per tensor, from every Einsum's evaluated spec
     for evaluated in m.evaluated_specs.values():
@@ -76,6 +79,16 @@ def map_point(workload: Path, glb_bytes: int, imperfect: bool):
             "refetch_factor": dram / compulsory if compulsory else None,
             "intermediate": t in intermediates,
         }
+    # Peak GlobalBuffer occupancy per tensor: the mapper's
+    # "<einsum><SEP>usage<SEP>memory<SEP>GlobalBuffer<SEP><tensor>" columns hold the
+    # reserved fraction of the buffer. A tensor shared by two Einsums (fused Alpha)
+    # appears once per Einsum with the same reservation, so take the max.
+    glb_occupancy = {}
+    for col in m.data.columns:
+        parts = col.split("<SEP>")
+        if len(parts) == 5 and parts[1:4] == ["usage", "memory", "GlobalBuffer"]:
+            occ = float(m.data[col].iloc[0]) * glb_bytes
+            glb_occupancy[parts[4]] = max(glb_occupancy.get(parts[4], 0.0), occ)
     energy = {k: float(v) for k, v in m.energy(per_component=True).items() if v}
     return m, {
         "glb_bytes": glb_bytes,
@@ -85,6 +98,7 @@ def map_point(workload: Path, glb_bytes: int, imperfect: bool):
         "latency_s": float(m.latency()),
         "dram_bytes": sum(v["dram_bytes"] for v in tensors.values()),
         "tensors": tensors,
+        "glb_occupancy_bytes": glb_occupancy,
         "mapper_s": round(mapper_s, 1),
     }
 
@@ -122,6 +136,8 @@ def main():
                     f"{t} x{v['refetch_factor']:.3g}" if v["refetch_factor"] else f"{t} (on chip)"
                     for t, v in row["tensors"].items()
                 )
+                + "  GLB occ "
+                + " ".join(f"{t} {b / glb:.1%}" for t, b in row["glb_occupancy_bytes"].items())
                 + f"  [{row['mapper_s']} s]",
                 flush=True,
             )

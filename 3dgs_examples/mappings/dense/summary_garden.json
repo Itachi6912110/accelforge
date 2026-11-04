@@ -26,6 +26,9 @@
           "intermediate": false
         }
       },
+      "glb_occupancy_bytes": {
+        "G2D": 24.0
+      },
       "mapper_s": 0.9
     },
     {
@@ -53,6 +56,9 @@
           "refetch_factor": 1.0,
           "intermediate": false
         }
+      },
+      "glb_occupancy_bytes": {
+        "G2D": 24.0
       },
       "mapper_s": 0.7
     },
@@ -82,7 +88,10 @@
           "intermediate": false
         }
       },
-      "mapper_s": 1.1
+      "glb_occupancy_bytes": {
+        "G2D": 24.0
+      },
+      "mapper_s": 0.6
     }
   ],
   "alpha_blend": [
@@ -118,7 +127,11 @@
           "intermediate": false
         }
       },
-      "mapper_s": 1.1
+      "glb_occupancy_bytes": {
+        "F2D": 168.0,
+        "I": 59712.0
+      },
+      "mapper_s": 1.0
     },
     {
       "glb_bytes": 262144,
@@ -151,6 +164,10 @@
           "refetch_factor": 1.0,
           "intermediate": false
         }
+      },
+      "glb_occupancy_bytes": {
+        "F2D": 168.0,
+        "I": 238848.0
       },
       "mapper_s": 0.8
     },
@@ -185,6 +202,10 @@
           "refetch_factor": 1.0,
           "intermediate": false
         }
+      },
+      "glb_occupancy_bytes": {
+        "F2D": 168.0,
+        "I": 955392.0
       },
       "mapper_s": 0.3
     }
@@ -228,7 +249,13 @@
           "intermediate": false
         }
       },
-      "mapper_s": 1.1
+      "glb_occupancy_bytes": {
+        "Alpha": 13440.0,
+        "G2D": 336.0,
+        "F2D": 168.0,
+        "I": 30720.0
+      },
+      "mapper_s": 1.0
     },
     {
       "glb_bytes": 262144,
@@ -267,6 +294,12 @@
           "refetch_factor": 1.0,
           "intermediate": false
         }
+      },
+      "glb_occupancy_bytes": {
+        "Alpha": 2688.0,
+        "G2D": 336.0,
+        "F2D": 168.0,
+        "I": 238848.0
       },
       "mapper_s": 1.1
     },
@@ -308,7 +341,13 @@
           "intermediate": false
         }
       },
-      "mapper_s": 1.1
+      "glb_occupancy_bytes": {
+        "Alpha": 10752.0,
+        "G2D": 336.0,
+        "F2D": 168.0,
+        "I": 955392.0
+      },
+      "mapper_s": 1.2
     }
   ]
 }
