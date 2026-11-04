@@ -1,26 +1,35 @@
 # 3DGS render architecture (3DGSArchSpace.pptx p.3):
 #
-#   External Memory (DRAM) -> Global Buffer (SRAM) -> { ComputeAlpha unit | ComputeBlend unit }
+#   External Memory (DRAM) -> Global Buffer (SRAM)
+#                          -> { ComputeProject unit | ComputeAlpha unit | ComputeBlend unit }
 #
 # Memory constraints: size of each memory, which tensors it may keep.
 #   DRAM keeps every non-intermediate tensor (keep: ~Intermediates), so in the fused
-#   cascade alpha may live only in the Global Buffer.
+#   cascade G2D and alpha may live only in the Global Buffer.
 #   GlobalBuffer keeps whatever DRAM does not and may keep anything (size: knob).
 # Compute constraints: spatial dimension (number of units) and which Einsum (hence
-#   which input/output tensors) each unit runs: `enabled:` pins ComputeAlpha (2 tensors)
-#   to the alpha unit and ComputeBlend (3 tensors) to the blend unit. (Tag names would be
-#   cleaner but fail to evaluate in a workload that lacks the other Einsum.)
+#   which input/output tensors) each unit runs. `enabled:` pins each Einsum to its unit
+#   by the shape of its tensor set, which is defined in every workload:
+#     ComputeProject  G3D, View -> G2D   ranks {v, g}            len(All.rank_variables) == 2
+#     ComputeAlpha    G2D -> Alpha       2 tensors               len(All) == 2
+#     ComputeBlend    Alpha, F2D -> I    3 tensors, ranks v,g,pu,pv
+#   (Tag or tensor names would be cleaner but fail to evaluate in a workload that lacks
+#   that Einsum / tensor.)
 #
 # Costs come from hwcomponents models:
 #   DRAM         LPDDR4 (hwcomponents_cacti, flat J/bit), 64-bit bursts
 #   GlobalBuffer CACTI SRAM, 256-bit port (an SRAM, not a cache: AccelForge places data
 #                explicitly; swap component_class to SimpleSRAMCache for cache-style
 #                per-access energy, registering it with spec.config.add_component_models)
-#   Compute      Aladdin IntMAC (32-bit, FP32 approximated as INT32); one alpha eval
+#   Compute      Aladdin IntMAC (32-bit, FP32 approximated as INT32); one projection
+#                ~150 MAC-equivalents (quaternion -> R, Sigma3D = (SR)^T(SR), view
+#                transform + perspective, EWA Jacobian, Sigma2D = T^T Sigma3D T, conic
+#                inverse, radius from the 2x2 eigenvalues), one alpha eval
 #                ~12 MAC-equivalents (quadratic form + exp polynomial + opacity), one
 #                blend step ~6 (alpha*T, RGB accumulate, T update, threshold compare)
 {% set GlobalBufferBytes = GlobalBufferBytes | default(262144) %}
 {% set TechNode = TechNode | default(16e-9) %}
+{% set ProjectUnits = ProjectUnits | default(256) %}
 {% set AlphaUnits = AlphaUnits | default(256) %}
 {% set BlendUnits = BlendUnits | default(256) %}
 
@@ -52,6 +61,22 @@ arch:
   - !Fork
     nodes:
     - !Container
+      name: ComputeProjectArray
+      spatial: [{name: X, fanout: {{ProjectUnits}}}]
+    - !Compute
+      name: ComputeProjectUnit
+      component_class: IntMAC
+      enabled: len(All.rank_variables) == 2   # ComputeProject: G3D, View -> G2D
+      extra_attributes_for_component_model:
+        tech_node: {{TechNode}}
+        multiplier_width: 32
+        adder_width: 32
+      actions:
+      - {name: compute, energy_scale: 150}
+
+  - !Fork
+    nodes:
+    - !Container
       name: ComputeAlphaArray
       spatial: [{name: X, fanout: {{AlphaUnits}}}]
     - !Compute
@@ -72,7 +97,7 @@ arch:
   - !Compute
     name: ComputeBlendUnit
     component_class: IntMAC
-    enabled: len(All) == 3             # ComputeBlend: Alpha, F2D -> I
+    enabled: len(All) == 3 and len(All.rank_variables) == 4   # ComputeBlend: Alpha, F2D -> I
     extra_attributes_for_component_model:
       tech_node: {{TechNode}}
       multiplier_width: 32

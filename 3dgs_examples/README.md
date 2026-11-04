@@ -8,6 +8,7 @@ p.2 "3DGS Render: Workload", p.3 "3DGS Render: Architecture". Layout follows
 ## Workload (p.2)
 
 ```
+G2D[v, g]           = ComputeProject(G3D[g], View[v])
 alpha[v, g, pu, pv] = ComputeAlpha(G2D[v, g], pu, pv)
 I[v, pu, pv]        = ComputeBlend(F2D[v, g], alpha[v, g, pu, pv])      (reduce over g)
 
@@ -26,20 +27,23 @@ v in [1, Nv]                 views to render
 
 | file | contents |
 |---|---|
+| `workloads/dense/gaussian_project/garden.yaml` | ComputeProject only (G2D written to DRAM) |
 | `workloads/dense/alpha_compute/garden.yaml` | ComputeAlpha only (alpha written to DRAM) |
 | `workloads/dense/alpha_blend/garden.yaml` | ComputeBlend only (alpha read from DRAM) |
-| `workloads/dense/render/garden.yaml` | both, as one cascade (alpha is an intermediate the mapper may keep on chip) |
+| `workloads/dense/render/garden.yaml` | all three, as one cascade (G2D and alpha are intermediates the mapper may keep on chip) |
 
 Garden ranks (MipNeRF360 garden, on-the-fly-nvs anchor): `Nv = 185` views,
 `Ng = 1,041,334` Gaussians, `622 x 960` pixels, so 1.15e14 points per Einsum. Bits:
-G2D 192 (mean2D + conic + opacity, fp32), F2D 96 (RGB), alpha 32, I 128 (RGB + T).
+G3D 352 (mean3D + scale + quaternion + opacity, fp32), View 640 (world-to-camera 4x4 +
+fx, fy, cx, cy), G2D 192 (mean2D + conic + opacity), F2D 96 (RGB), alpha 32, I 128 (RGB + T).
 All are Jinja knobs (`Nv`, `Ng`, `NpRow`, `NpCol`, `AlphaBits`).
 
 ## Architecture (p.3)
 
 `arches/3dgs_render.yaml`: External Memory (DRAM, LPDDR4) -> Global Buffer (CACTI SRAM,
-`GlobalBufferBytes`, default 256 KiB) -> { ComputeAlpha unit array | ComputeBlend unit
-array } (IntMAC, `AlphaUnits` / `BlendUnits` = 256 each). Memory constraints are the
+`GlobalBufferBytes`, default 256 KiB) -> { ComputeProject unit array | ComputeAlpha unit
+array | ComputeBlend unit array } (IntMAC, `ProjectUnits` / `AlphaUnits` / `BlendUnits` =
+256 each; ~150 / 12 / 6 MAC-equivalents per projection / alpha / blend step). Memory constraints are the
 `size` / `keep` / `may_keep` fields; compute constraints are the spatial fanouts and the
 `enabled:` rule that pins each Einsum to its unit.
 
@@ -47,7 +51,7 @@ array } (IntMAC, `AlphaUnits` / `BlendUnits` = 256 each). Memory constraints are
 
 ```bash
 # from the accelforge repo root, env .conda/accelforge
-python 3dgs_examples/run_dense_mapping.py                 # 3 workloads x 3 buffer sizes, ~10 s
+python 3dgs_examples/run_dense_mapping.py                 # 4 workloads x 3 buffer sizes, ~15 s
 python 3dgs_examples/run_dense_mapping.py --glb 131072 --workloads render --imperfect
 ```
 
@@ -58,11 +62,19 @@ LoopTree as tagged YAML and as a diagram) and `mappings/dense/summary_garden.jso
 
 | workload | GB | DRAM / frame-set | re-fetch (vs. read once) |
 |---|---|---|---|
+| gaussian_project | any | 4.67 GB | G3D, View, G2D x1 (all 185 View matrices held on chip) |
 | alpha_compute | any | 460,100 GB | Alpha x1, G2D x1 (Alpha writes are 4 B x 1.15e14) |
 | alpha_blend | 64 KiB / 256 KiB / 1 MiB | 460,500 / 460,200 / 460,200 GB | F2D x160 / x40 / x10 |
-| render (fused) | 64 KiB / 256 KiB / 1 MiB | 2,159 / 279 / 71 GB | G2D, F2D x311 / x40 / x10; Alpha never in DRAM |
+| render (fused) | 64 KiB / 256 KiB / 1 MiB | 2,163 / 284 / 76 GB | F2D x311 / x40 / x10; G2D spilled (1 write + 311 / 40 / 10 re-reads); Alpha never in DRAM |
 
-Fused mapping at 256 KiB (`mappings/dense/render/garden/glb_262144.yaml`):
+The mapper fuses alpha -> blend but not projection: a top-level `Sequential` runs
+ComputeProject over all (v, g) first and writes G2D to DRAM, and the alpha/blend nest
+re-reads it per pixel strip. Keeping G2D on chip would need recomputing the projection
+per strip or holding a whole image of I (9.6 MB). Per-tensor GLB occupancy and plots:
+`notebooks/3dgs/dense/basic_arch_analysis.ipynb`.
+
+Fused alpha -> blend nest at 256 KiB (`mappings/dense/render/garden/glb_262144.yaml`,
+after the projection branch):
 
 ```
 DRAM[G2D, I, F2D]

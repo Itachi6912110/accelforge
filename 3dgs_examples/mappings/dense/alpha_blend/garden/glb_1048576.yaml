@@ -1,7 +1,7 @@
 # AccelForge FFM mapper (metric: energy), dense alpha_blend, scene garden
 # arch: 3dgs_examples/arches/3dgs_render.yaml with GlobalBufferBytes=1048576
 # workload: 3dgs_examples/workloads/dense/alpha_blend/garden.yaml
-# energy 41143.3 J, latency 1.0971e+06 s, DRAM 460158 GB
+# energy 45765.3 J, latency 1.0971e+06 s, DRAM 460158 GB
 mapping:
   nodes:
   - !Storage

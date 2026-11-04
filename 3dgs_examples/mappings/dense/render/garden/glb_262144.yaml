@@ -1,93 +1,142 @@
 # AccelForge FFM mapper (metric: energy), dense render, scene garden
 # arch: 3dgs_examples/arches/3dgs_render.yaml with GlobalBufferBytes=262144
 # workload: 3dgs_examples/workloads/dense/render/garden.yaml
-# energy 6880.66 J, latency 60774.4 s, DRAM 279.179 GB
+# energy 7137.22 J, latency 60785.5 s, DRAM 283.848 GB
 mapping:
   nodes:
   - !Storage
-    tensors: [G2D, I, F2D]
+    tensors: [G2D]
     component: DRAM
-  - !Reservation
-    purposes: [G2D, I, F2D]
-    resource: DRAM
-  - !Temporal
-    rank_variable: pv
-    tile_shape: 24
-  - !Temporal
-    rank_variable: v
-    tile_shape: 1
-  - !Storage
-    tensors: [I]
-    component: GlobalBuffer
-  - !Reservation
-    purposes: [I]
-    resource: GlobalBuffer
-  - !Temporal
-    rank_variable: g
-    tile_shape: 14
-  - !Storage
-    tensors: [G2D, F2D]
-    component: GlobalBuffer
-  - !Reservation
-    purposes: [G2D, F2D]
-    resource: GlobalBuffer
-  - !Temporal
-    rank_variable: pu
-    tile_shape: 2
-  - !Storage
-    tensors: [Alpha]
-    component: GlobalBuffer
   - !Sequential
     nodes:
     - !Nested
       nodes:
+      - !Storage
+        tensors: [View, G3D]
+        component: DRAM
+      - !Storage
+        tensors: [View]
+        component: GlobalBuffer
       - !Reservation
-        purposes: [Alpha]
+        purposes: [View, G3D, G2D]
+        resource: DRAM
+      - !Reservation
+        purposes: [View]
         resource: GlobalBuffer
       - !Temporal
         rank_variable: g
-        tile_shape: 2
+        tile_shape: 14
+      - !Storage
+        tensors: [G3D]
+        component: GlobalBuffer
+      - !Reservation
+        purposes: [G3D]
+        resource: GlobalBuffer
+      - !Temporal
+        rank_variable: v
+        tile_shape: 5
       - !Spatial
         rank_variable: g
         tile_shape: 1
         name: X
-        component: ComputeAlphaArray
+        component: ComputeProjectArray
       - !Spatial
-        rank_variable: pu
+        rank_variable: v
         tile_shape: 1
         name: X
-        component: ComputeAlphaArray
-      - !Spatial
-        rank_variable: pv
-        tile_shape: 1
-        name: X
-        component: ComputeAlphaArray
+        component: ComputeProjectArray
       - !Compute
-        einsum: ComputeAlpha
-        component: ComputeAlphaUnit
+        einsum: ComputeProject
+        component: ComputeProjectUnit
     - !Nested
       nodes:
+      - !Storage
+        tensors: [I, F2D]
+        component: DRAM
       - !Reservation
-        purposes: [Alpha]
-        resource: GlobalBuffer
+        purposes: [G2D]
+        resource: DRAM
+      - !Reservation
+        purposes: [I, F2D]
+        resource: DRAM
       - !Temporal
         rank_variable: pv
-        tile_shape: 8
-      - !Spatial
+        tile_shape: 24
+      - !Temporal
+        rank_variable: v
+        tile_shape: 1
+      - !Storage
+        tensors: [I]
+        component: GlobalBuffer
+      - !Reservation
+        purposes: [I]
+        resource: GlobalBuffer
+      - !Temporal
         rank_variable: g
-        tile_shape: 1
-        name: X
-        component: ComputeBlendArray
-      - !Spatial
+        tile_shape: 14
+      - !Storage
+        tensors: [G2D, F2D]
+        component: GlobalBuffer
+      - !Reservation
+        purposes: [G2D, F2D]
+        resource: GlobalBuffer
+      - !Temporal
         rank_variable: pu
-        tile_shape: 1
-        name: X
-        component: ComputeBlendArray
-      - !Spatial
-        rank_variable: pv
-        tile_shape: 1
-        name: X
-        component: ComputeBlendArray
-      - !Compute
-        einsum: ComputeBlend
-        component: ComputeBlendUnit
+        tile_shape: 2
+      - !Storage
+        tensors: [Alpha]
+        component: GlobalBuffer
+      - !Sequential
+        nodes:
+        - !Nested
+          nodes:
+          - !Reservation
+            purposes: [Alpha]
+            resource: GlobalBuffer
+          - !Temporal
+            rank_variable: g
+            tile_shape: 2
+          - !Spatial
+            rank_variable: g
+            tile_shape: 1
+            name: X
+            component: ComputeAlphaArray
+          - !Spatial
+            rank_variable: pu
+            tile_shape: 1
+            name: X
+            component: ComputeAlphaArray
+          - !Spatial
+            rank_variable: pv
+            tile_shape: 1
+            name: X
+            component: ComputeAlphaArray
+          - !Compute
+            einsum: ComputeAlpha
+            component: ComputeAlphaUnit
+        - !Nested
+          nodes:
+          - !Reservation
+            purposes: [Alpha]
+            resource: GlobalBuffer
+          - !Temporal
+            rank_variable: pv
+            tile_shape: 8
+          - !Spatial
+            rank_variable: g
+            tile_shape: 1
+            name: X
+            component: ComputeBlendArray
+          - !Spatial
+            rank_variable: pu
+            tile_shape: 1
+            name: X
+            component: ComputeBlendArray
+          - !Spatial
+            rank_variable: pv
+            tile_shape: 1
+            name: X
+            component: ComputeBlendArray
+          - !Compute
+            einsum: ComputeBlend
+            component: ComputeBlendUnit

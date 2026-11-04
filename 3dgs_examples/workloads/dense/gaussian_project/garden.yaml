@@ -1,0 +1,36 @@
+# 3DGS render, Gaussian projection, DENSE association (3DGSArchSpace.pptx p.2):
+#
+#   G2D[v, g] = ComputeProject(G3D[g], View[v])
+#
+#   v  in [0, Nv)       views to render
+#   g  in [0, Ng)       Gaussian index, near-to-far at view v
+#
+# Dense: every Gaussian is projected into every view (no frustum culling), so the
+# iteration space is the full box Nv x Ng. G2D is a workload output here, i.e. it is
+# written to DRAM (unfused); see ../render/garden.yaml for the fused cascade.
+#
+# Bits (fp32 values):
+#   G3D  352 = mean3D (3) + scale (3) + rotation quaternion (4) + opacity (1); the SH
+#              color coefficients are not projection inputs (F2D stays a primary input
+#              of the blend, as on the slide)
+#   View 640 = world-to-camera 4x4 (16) + intrinsics fx, fy, cx, cy (4)
+#   G2D  192 = mean2D (2) + conic (3) + opacity (1)
+#
+# Garden defaults (MipNeRF360 garden, on-the-fly-nvs anchor recorded in
+# benchmarks/workload/garden/frame_00000 of 3DGS-Arch-Evaluation):
+#   Nv = 185 views (all images), Ng = 1,041,334 Gaussians.
+{% set Nv = Nv | default(185) %}
+{% set Ng = Ng | default(1041334) %}
+
+workload:
+  iteration_space_shape:
+    v: 0 <= v < {{Nv}}
+    g: 0 <= g < {{Ng}}
+
+  einsums:
+  - name: ComputeProject
+    tags: [compute_project]
+    tensor_accesses:
+    - {name: G3D, projection: [g], bits_per_value: 352}
+    - {name: View, projection: [v], bits_per_value: 640}
+    - {name: G2D, projection: [v, g], output: True, bits_per_value: 192}

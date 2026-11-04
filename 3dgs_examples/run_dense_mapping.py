@@ -2,7 +2,7 @@
 
 Usage (from the accelforge repo root):
     python 3dgs_examples/run_dense_mapping.py [--scene garden] [--glb 65536 262144 1048576]
-        [--workloads alpha_compute alpha_blend render] [--imperfect]
+        [--workloads gaussian_project alpha_compute alpha_blend render] [--imperfect]
 
 For every (workload, GlobalBuffer size) it runs the FFM mapper (energy objective) on
   3dgs_examples/workloads/dense/<workload>/<scene>.yaml  x  3dgs_examples/arches/3dgs_render.yaml
@@ -77,6 +77,9 @@ def map_point(workload: Path, glb_bytes: int, imperfect: bool):
             "dram_bytes": dram,
             "compulsory_dram_bytes": compulsory,
             "refetch_factor": dram / compulsory if compulsory else None,
+            # DRAM traffic in units of the tensor's size; for an intermediate that is
+            # spilled (not fused) it is 1 write + its re-reads, 0 if it stays on chip
+            "dram_over_size": dram / (bits / 8),
             "intermediate": t in intermediates,
         }
     # Peak GlobalBuffer occupancy per tensor: the mapper's
@@ -107,7 +110,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene", default="garden")
     ap.add_argument("--glb", type=int, nargs="+", default=[65536, 262144, 1048576])
-    ap.add_argument("--workloads", nargs="+", default=["alpha_compute", "alpha_blend", "render"])
+    ap.add_argument("--workloads", nargs="+", default=["gaussian_project", "alpha_compute", "alpha_blend", "render"])
     ap.add_argument("--imperfect", action="store_true")
     args = ap.parse_args()
 
@@ -133,7 +136,9 @@ def main():
                 f"{wl:14s} GLB {glb:>8d} B  E {row['energy_J']:.4g} J  "
                 f"lat {row['latency_s']:.4g} s  DRAM {row['dram_bytes'] / 1e9:.4g} GB  "
                 + "  ".join(
-                    f"{t} x{v['refetch_factor']:.3g}" if v["refetch_factor"] else f"{t} (on chip)"
+                    f"{t} x{v['refetch_factor']:.3g}" if v["refetch_factor"]
+                    else f"{t} (via DRAM, x{v['dram_over_size']:.3g} size)" if v["dram_bytes"]
+                    else f"{t} (on chip)"
                     for t, v in row["tensors"].items()
                 )
                 + "  GLB occ "
