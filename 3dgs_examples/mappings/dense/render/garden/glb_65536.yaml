@@ -25,7 +25,7 @@ mapping:
         resource: GlobalBuffer
       - !Temporal
         rank_variable: g
-        tile_shape: 7
+        tile_shape: 14
       - !Storage
         tensors: [G3D]
         component: GlobalBuffer

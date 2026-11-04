@@ -3,16 +3,16 @@
     {
       "glb_bytes": 65536,
       "n_computes": 192646790,
-      "energy_J": 0.5150344956911774,
+      "energy_J": 0.515395419189485,
       "energy_per_component_J": {
-        "DRAM": 0.298838813184,
-        "GlobalBuffer": 0.0011047364678233862,
-        "ComputeProjectUnit": 0.12129052806084907,
-        "ComputeAlphaUnit": 0.04690020903944969,
-        "ComputeBlendUnit": 0.04690020903944969
+        "DRAM": 0.29883966566400005,
+        "GlobalBuffer": 0.0014644049806520343,
+        "ComputeProjectUnit": 0.12129066217129982,
+        "ComputeAlphaUnit": 0.046900343149900436,
+        "ComputeBlendUnit": 0.046900343149900436
       },
-      "latency_s": 11.132613315582276,
-      "dram_bytes": 4669356456.0,
+      "latency_s": 11.132645072937011,
+      "dram_bytes": 4669369776.0,
       "tensors": {
         "G2D": {
           "dram_bytes": 4623522960.0,
@@ -29,8 +29,8 @@
           "intermediate": false
         },
         "View": {
-          "dram_bytes": 14800.0,
-          "compulsory_dram_bytes": 14800.0,
+          "dram_bytes": 28120.0,
+          "compulsory_dram_bytes": 28120.0,
           "refetch_factor": 1.0,
           "dram_over_size": 1.0,
           "intermediate": false
@@ -38,23 +38,23 @@
       },
       "glb_occupancy_bytes": {
         "G3D": 616.0,
-        "View": 14800.0
+        "View": 28120.0
       },
-      "mapper_s": 1.3
+      "mapper_s": 4.0
     },
     {
       "glb_bytes": 262144,
       "n_computes": 192646790,
-      "energy_J": 0.5164632869754624,
+      "energy_J": 0.5172572522727237,
       "energy_per_component_J": {
-        "DRAM": 0.298838813184,
-        "GlobalBuffer": 0.0025335277896374464,
-        "ComputeProjectUnit": 0.12129052806084907,
-        "ComputeAlphaUnit": 0.04690020903944969,
-        "ComputeBlendUnit": 0.04690020903944969
+        "DRAM": 0.29883966566400005,
+        "GlobalBuffer": 0.0033262381330132484,
+        "ComputeProjectUnit": 0.12129066217129982,
+        "ComputeAlphaUnit": 0.046900343149900436,
+        "ComputeBlendUnit": 0.046900343149900436
       },
-      "latency_s": 11.132613315582276,
-      "dram_bytes": 4669356456.0,
+      "latency_s": 11.132645072937011,
+      "dram_bytes": 4669369776.0,
       "tensors": {
         "G2D": {
           "dram_bytes": 4623522960.0,
@@ -71,8 +71,8 @@
           "intermediate": false
         },
         "View": {
-          "dram_bytes": 14800.0,
-          "compulsory_dram_bytes": 14800.0,
+          "dram_bytes": 28120.0,
+          "compulsory_dram_bytes": 28120.0,
           "refetch_factor": 1.0,
           "dram_over_size": 1.0,
           "intermediate": false
@@ -80,23 +80,23 @@
       },
       "glb_occupancy_bytes": {
         "G3D": 616.0,
-        "View": 14800.0
+        "View": 28120.0
       },
       "mapper_s": 1.0
     },
     {
       "glb_bytes": 1048576,
       "n_computes": 192646790,
-      "energy_J": 0.5197505972313032,
+      "energy_J": 0.5214241438260505,
       "energy_per_component_J": {
-        "DRAM": 0.298838813184,
-        "GlobalBuffer": 0.005820837803184986,
-        "ComputeProjectUnit": 0.12129052806084907,
-        "ComputeAlphaUnit": 0.04690020903944969,
-        "ComputeBlendUnit": 0.04690020903944969
+        "DRAM": 0.29883966566400005,
+        "GlobalBuffer": 0.007493129465728998,
+        "ComputeProjectUnit": 0.12129066217129982,
+        "ComputeAlphaUnit": 0.046900343149900436,
+        "ComputeBlendUnit": 0.046900343149900436
       },
-      "latency_s": 11.132613315582276,
-      "dram_bytes": 4669356456.0,
+      "latency_s": 11.132645072937011,
+      "dram_bytes": 4669369776.0,
       "tensors": {
         "G2D": {
           "dram_bytes": 4623522960.0,
@@ -113,8 +113,8 @@
           "intermediate": false
         },
         "View": {
-          "dram_bytes": 14800.0,
-          "compulsory_dram_bytes": 14800.0,
+          "dram_bytes": 28120.0,
+          "compulsory_dram_bytes": 28120.0,
           "refetch_factor": 1.0,
           "dram_over_size": 1.0,
           "intermediate": false
@@ -122,7 +122,7 @@
       },
       "glb_occupancy_bytes": {
         "G3D": 616.0,
-        "View": 14800.0
+        "View": 28120.0
       },
       "mapper_s": 0.2
     }
@@ -160,7 +160,7 @@
       "glb_occupancy_bytes": {
         "G2D": 24.0
       },
-      "mapper_s": 0.1
+      "mapper_s": 0.2
     },
     {
       "glb_bytes": 262144,
@@ -228,7 +228,7 @@
       "glb_occupancy_bytes": {
         "G2D": 24.0
       },
-      "mapper_s": 0.2
+      "mapper_s": 0.1
     }
   ],
   "alpha_blend": [
@@ -272,7 +272,7 @@
         "F2D": 168.0,
         "I": 59712.0
       },
-      "mapper_s": 0.3
+      "mapper_s": 0.5
     },
     {
       "glb_bytes": 262144,
@@ -363,16 +363,16 @@
     {
       "glb_bytes": 65536,
       "n_computes": 230066695136390,
-      "energy_J": 6302.540419799965,
+      "energy_J": 6302.540381097488,
       "energy_per_component_J": {
-        "DRAM": 138.4518627740797,
-        "GlobalBuffer": 477.45431242973285,
-        "ComputeProjectUnit": 118.79644998240656,
-        "ComputeAlphaUnit": 3672.317843188025,
+        "DRAM": 138.45186362655969,
+        "GlobalBuffer": 477.4542724723855,
+        "ComputeProjectUnit": 118.79645011651701,
+        "ComputeAlphaUnit": 3672.3178433221356,
         "ComputeBlendUnit": 1895.5199529195465
       },
-      "latency_s": 28180.82890237808,
-      "dram_bytes": 2163310292496.0,
+      "latency_s": 28180.82893413544,
+      "dram_bytes": 2163310305816.0,
       "tensors": {
         "G2D": {
           "dram_bytes": 1442539163520.0,
@@ -389,8 +389,8 @@
           "intermediate": false
         },
         "View": {
-          "dram_bytes": 14800.0,
-          "compulsory_dram_bytes": 14800.0,
+          "dram_bytes": 28120.0,
+          "compulsory_dram_bytes": 28120.0,
           "refetch_factor": 1.0,
           "dram_over_size": 1.0,
           "intermediate": false
@@ -418,8 +418,8 @@
         }
       },
       "glb_occupancy_bytes": {
-        "G3D": 308.0,
-        "View": 14800.0,
+        "G3D": 616.0,
+        "View": 28120.0,
         "Alpha": 13440.0,
         "G2D": 336.0,
         "F2D": 168.0,
@@ -430,16 +430,16 @@
     {
       "glb_bytes": 262144,
       "n_computes": 230066695136390,
-      "energy_J": 7137.215358052907,
+      "energy_J": 7137.2161520182035,
       "energy_per_component_J": {
-        "DRAM": 18.166285476869007,
-        "GlobalBuffer": 1020.3370806350687,
-        "ComputeProjectUnit": 256.1556990973968,
-        "ComputeAlphaUnit": 3809.6770923030153,
+        "DRAM": 18.166286329349006,
+        "GlobalBuffer": 1020.337873345412,
+        "ComputeProjectUnit": 256.15569923150724,
+        "ComputeAlphaUnit": 3809.677092437126,
         "ComputeBlendUnit": 2032.8791982198395
       },
-      "latency_s": 60785.53300394058,
-      "dram_bytes": 283848209256.0,
+      "latency_s": 60785.53303569794,
+      "dram_bytes": 283848222576.0,
       "tensors": {
         "G2D": {
           "dram_bytes": 189564441360.0,
@@ -456,8 +456,8 @@
           "intermediate": false
         },
         "View": {
-          "dram_bytes": 14800.0,
-          "compulsory_dram_bytes": 14800.0,
+          "dram_bytes": 28120.0,
+          "compulsory_dram_bytes": 28120.0,
           "refetch_factor": 1.0,
           "dram_over_size": 1.0,
           "intermediate": false
@@ -486,7 +486,7 @@
       },
       "glb_occupancy_bytes": {
         "G3D": 616.0,
-        "View": 14800.0,
+        "View": 28120.0,
         "Alpha": 2688.0,
         "G2D": 336.0,
         "F2D": 168.0,
@@ -497,16 +497,16 @@
     {
       "glb_bytes": 1048576,
       "n_computes": 230066695136390,
-      "energy_J": 8243.171456094457,
+      "energy_J": 8243.17312964105,
       "energy_per_component_J": {
-        "DRAM": 4.850539288705252,
-        "GlobalBuffer": 2089.9165039050667,
-        "ComputeProjectUnit": 272.719839417221,
-        "ComputeAlphaUnit": 3826.2412326228396,
+        "DRAM": 4.850540141185252,
+        "GlobalBuffer": 2089.9181761967293,
+        "ComputeProjectUnit": 272.71983955133146,
+        "ComputeAlphaUnit": 3826.24123275695,
         "ComputeBlendUnit": 2049.4433385396637
       },
-      "latency_s": 64717.33183206558,
-      "dram_bytes": 75789676056.0,
+      "latency_s": 64717.33186382294,
+      "dram_bytes": 75789689376.0,
       "tensors": {
         "G2D": {
           "dram_bytes": 50858752560.0,
@@ -523,8 +523,8 @@
           "intermediate": false
         },
         "View": {
-          "dram_bytes": 14800.0,
-          "compulsory_dram_bytes": 14800.0,
+          "dram_bytes": 28120.0,
+          "compulsory_dram_bytes": 28120.0,
           "refetch_factor": 1.0,
           "dram_over_size": 1.0,
           "intermediate": false
@@ -553,13 +553,13 @@
       },
       "glb_occupancy_bytes": {
         "G3D": 616.0,
-        "View": 14800.0,
+        "View": 28120.0,
         "Alpha": 10752.0,
         "G2D": 336.0,
         "F2D": 168.0,
         "I": 955392.0
       },
-      "mapper_s": 1.6
+      "mapper_s": 1.8
     }
   ]
 }

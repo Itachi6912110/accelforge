@@ -27,7 +27,7 @@ workload:
     tags: [compute_project]
     tensor_accesses:
     - {name: G3D, projection: [g], bits_per_value: 352}
-    - {name: View, projection: [v], bits_per_value: 640}
+    - {name: View, projection: [v], bits_per_value: 1216}
     - {name: G2D, projection: [v, g], output: True, bits_per_value: 192}
 
   - name: ComputeAlpha

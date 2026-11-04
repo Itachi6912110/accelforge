@@ -13,7 +13,10 @@
 #   G3D  352 = mean3D (3) + scale (3) + rotation quaternion (4) + opacity (1); the SH
 #              color coefficients are not projection inputs (F2D stays a primary input
 #              of the blend, as on the slide)
-#   View 640 = world-to-camera 4x4 (16) + intrinsics fx, fy, cx, cy (4)
+#   View 1216 = INRIA rasterizer camera, as preprocessCUDA receives it per view:
+#              viewmatrix 4x4 (16) + projmatrix 4x4 (16) + W, H (2, int32) +
+#              tan_fovx, tan_fovy (2) + focal_x, focal_y (2) = 38 x 32 b. cam_pos (3) is
+#              left out: only computeColorFromSH uses it, and color is F2D's job here.
 #   G2D  192 = mean2D (2) + conic (3) + opacity (1)
 #
 # Garden defaults (MipNeRF360 garden, on-the-fly-nvs anchor recorded in
@@ -32,5 +35,5 @@ workload:
     tags: [compute_project]
     tensor_accesses:
     - {name: G3D, projection: [g], bits_per_value: 352}
-    - {name: View, projection: [v], bits_per_value: 640}
+    - {name: View, projection: [v], bits_per_value: 1216}
     - {name: G2D, projection: [v, g], output: True, bits_per_value: 192}

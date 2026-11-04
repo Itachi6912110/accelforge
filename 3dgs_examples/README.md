@@ -34,8 +34,8 @@ v in [1, Nv]                 views to render
 
 Garden ranks (MipNeRF360 garden, on-the-fly-nvs anchor): `Nv = 185` views,
 `Ng = 1,041,334` Gaussians, `622 x 960` pixels, so 1.15e14 points per Einsum. Bits:
-G3D 352 (mean3D + scale + quaternion + opacity, fp32), View 640 (world-to-camera 4x4 +
-fx, fy, cx, cy), G2D 192 (mean2D + conic + opacity), F2D 96 (RGB), alpha 32, I 128 (RGB + T).
+G3D 352 (mean3D + scale + quaternion + opacity, fp32), View 1216 (INRIA rasterizer camera:
+viewmatrix + projmatrix 4x4, W, H, tan_fov x/y, focal x/y), G2D 192 (mean2D + conic + opacity), F2D 96 (RGB), alpha 32, I 128 (RGB + T).
 All are Jinja knobs (`Nv`, `Ng`, `NpRow`, `NpCol`, `AlphaBits`).
 
 ## Architecture (p.3)
